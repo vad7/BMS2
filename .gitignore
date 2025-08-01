@@ -1,0 +1,9 @@
+/sloeber.ino.cpp
+/.project
+/.cproject
+/.settings/
+/core/
+/Release/
+/spec.d
+*.asm_
+*.doc#

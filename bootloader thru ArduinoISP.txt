@@ -1,0 +1,89 @@
+C:\Users\vadim\AppData\Local\Arduino15\packages\MiniCore\tools\avrdude\8.0-arduino.1/bin/avrdude -CC:\Users\vadim\AppData\Local\Arduino15\packages\MiniCore\tools\avrdude\8.0-arduino.1/etc/avrdude.conf -v -patmega328pb -cstk500v1 -PCOM6 -b115200 -e -Ulock:w:0xff:m -Uefuse:w:0b11110101:m -Uhfuse:w:0xdf:m -Ulfuse:w:0b11111111:m 
+Avrdude version 8.0-arduino.1
+Copyright see https://github.com/avrdudes/avrdude/blob/main/AUTHORS
+
+System wide configuration file is C:\Users\vadim\AppData\Local\Arduino15\packages\MiniCore\tools\avrdude\8.0-arduino.1\etc\avrdude.conf
+
+Using port            : COM6
+Using programmer      : stk500v1
+Setting baud rate     : 115200
+AVR part              : ATmega328PB
+Programming modes     : SPM, ISP, HVPP, debugWIRE
+Programmer type       : STK500
+Description           : Atmel STK500 v1
+HW Version            : 2
+FW Version            : 1.18
+Topcard               : Unknown
+Vtarget               : 0.0 V
+Varef                 : 0.0 V
+Oscillator            : Off
+SCK period            : 0.0 us
+XTAL frequency        : 7.372800 MHz
+
+AVR device initialized and ready to accept instructions
+Device signature = 1E 95 16 (ATmega328PB)
+Erased chip
+
+Processing -U lock:w:0xff:m
+Reading 1 byte for lock from input file 0xff
+in 1 section [0, 0]
+C:\Users\vadim\AppData\Local\Arduino15\packages\MiniCore\tools\avrdude\8.0-arduino.1/bin/avrdude -CC:\Users\vadim\AppData\Local\Arduino15\packages\MiniCore\tools\avrdude\8.0-arduino.1/etc/avrdude.conf -v -patmega328pb -cstk500v1 -PCOM6 -b115200 -Uflash:w:C:\Users\vadim\AppData\Local\Arduino15\packages\MiniCore\hardware\avr\3.1.1/bootloaders/urboot/atmega328pb/watchdog_1_s/autobaud/uart0_rxd0_txd1/led+b5/urboot_atmega328pb_pr_ee_ce.hex:i -Ulock:w:0xff:m 
+Avrdude version 8.0-arduino.1
+Copyright see https://github.com/avrdudes/avrdude/blob/main/AUTHORS
+
+System wide configuration file is C:\Users\vadim\AppData\Local\Arduino15\packages\MiniCore\tools\avrdude\8.0-arduino.1\etc\avrdude.conf
+
+Using port            : COM6
+Using programmer      : stk500v1
+Setting baud rate     : 115200
+Writing 1 byte (0xFF) to lock, 1 byte written, 1 verified
+
+Processing -U efuse:w:0b11110101:m
+Reading 1 byte for efuse from input file 0b11110101
+in 1 section [0, 0]
+Writing 1 byte (0xF5) to efuse, 1 byte written, 1 verified
+
+Processing -U hfuse:w:0xdf:m
+Reading 1 byte for hfuse from input file 0xdf
+in 1 section [0, 0]
+Writing 1 byte (0xDF) to hfuse, 1 byte written, 1 verified
+
+Processing -U lfuse:w:0b11111111:m
+Reading 1 byte for lfuse from input file 0b11111111
+in 1 section [0, 0]
+Writing 1 byte (0xFF) to lfuse, 1 byte written, 1 verified
+
+Avrdude done.  Thank you.
+AVR part              : ATmega328PB
+Programming modes     : SPM, ISP, HVPP, debugWIRE
+Programmer type       : STK500
+Description           : Atmel STK500 v1
+HW Version            : 2
+FW Version            : 1.18
+Topcard               : Unknown
+Vtarget               : 0.0 V
+Varef                 : 0.0 V
+Oscillator            : Off
+SCK period            : 0.0 us
+XTAL frequency        : 7.372800 MHz
+
+AVR device initialized and ready to accept instructions
+Device signature = 1E 95 16 (ATmega328PB)
+Auto-erasing chip as flash memory needs programming (-U flash:w:...)
+specify the -D option to disable this feature
+Erased chip
+
+Processing -U flash:w:C:\Users\vadim\AppData\Local\Arduino15\packages\MiniCore\hardware\avr\3.1.1/bootloaders/urboot/atmega328pb/watchdog_1_s/autobaud/uart0_rxd0_txd1/led+b5/urboot_atmega328pb_pr_ee_ce.hex:i
+Reading 384 bytes for flash from input file urboot_atmega328pb_pr_ee_ce.hex
+in 1 section [0x7e80, 0x7fff]: 3 pages and 0 pad bytes
+Writing 384 bytes to flash
+Writing | ################################################## | 100% 0.24s
+Reading | ################################################## | 100% 0.11s
+384 bytes of flash verified
+
+Processing -U lock:w:0xff:m
+Reading 1 byte for lock from input file 0xff
+in 1 section [0, 0]
+Writing 1 byte (0xFF) to lock, 1 byte written, 1 verified
+
+Avrdude done.  Thank you.
