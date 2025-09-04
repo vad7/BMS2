@@ -673,7 +673,7 @@ void setup()
 		DEBUG(F("Watchdog(")); DEBUG(WATCHDOG_NO_CONN); DEBUG(F("s): ")); if(!work.watchdog) DEBUG(F("NONE")); else { if(work.watchdog & 1) DEBUG(F("I2C ")); if(work.watchdog & 2) DEBUG(F("BMS")); }
 		DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_watchdog); DEBUGN(F("=1-I2C,2-BMS,3-all)"));
 		DEBUG(F("RS485: ")); DEBUG(BMS_SERIAL_RATE); DEBUGN(F(" 8N1"));
-		DEBUG(F("BMS IDs: ")); for(uint8_t i = 0; i < BMS_NUM_MAX; i++) { DEBUG(i); DEBUG(' '); }
+		DEBUG(F("BMS MODBUS IDs: ")); for(uint8_t i = 1; i <= BMS_NUM_MAX; i++) { DEBUG(i); DEBUG(' '); }
 		DEBUG(F("\nBMS read period, ms: "));
 		if(work.UART_read_period > 1) DEBUG(work.UART_read_period);
 		else if(work.UART_read_period == 1) DEBUG(F("Synch I2C"));
@@ -840,11 +840,11 @@ void loop()
 				read_idx = 0;	// reset read index
 				if(debug == 3) { DEBUG(F("Send to BMS ")); DEBUGN(read_bms_num + 1); }
 				uint8_t crc = BMS_send_pgm_cmd(&BMS_Cmd_Head[0], sizeof(BMS_Cmd_Head), 0);
+				BMS_SERIAL.write(read_bms_num + 1);
+				crc += read_bms_num + 1;
 				if(delta_new_cnt) {
 					if(debugmode) {	DEBUGN(F(" Send Delta")); }
 					uint8_t b;
-					BMS_SERIAL.write(read_bms_num + 1);
-					crc += read_bms_num + 1;
 					crc += BMS_send_pgm_cmd(&BMS_Cmd_ChangeDelta[0], sizeof(BMS_Cmd_ChangeDelta), 0);
 					b = delta_new >> 8;
 					BMS_SERIAL.write(b);
@@ -858,9 +858,7 @@ void loop()
 						delta_change_pause = 0;
 					}
 				} else {
-					BMS_SERIAL.write(read_bms_num + 1);
-					crc += read_bms_num + 1;
-					crc = BMS_send_pgm_cmd(&BMS_Cmd_Request[0], sizeof(BMS_Cmd_Request), crc);
+					crc += BMS_send_pgm_cmd(&BMS_Cmd_Request[0], sizeof(BMS_Cmd_Request), crc);
 				}
 				BMS_SERIAL.write(crc);
 				bms_last_read_time = m;
