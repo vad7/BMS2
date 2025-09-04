@@ -55,7 +55,7 @@ extern "C" {
 #define MAIN_LOOP_PERIOD			1		// msec
 #define BMS_NO_TEMP					255
 #define WATCHDOG_NO_CONN			30UL	// sec
-#define BMS_MIN_PAUSE_BETWEEN_READS	20UL	// msec
+#define BMS_MIN_PAUSE_BETWEEN_READS	20UL	// msec, defaults
 #define BMS_CHANGE_DELTA_PAUSE_MIN  1800	// sec
 #define BMS_CHANGE_DELTA_EQUALIZER  60		// attempts (* ~1 sec)
 #define BMS_CHANGE_DELTA_DISCHARGE  30		// sec, When I2C_MAP_MODE = M_ON balance delta => BalansDelta[max]
@@ -103,6 +103,7 @@ const char dbg_debug[] PROGMEM = "dbg";
 const char dbg_bms[] PROGMEM = "bms";
 const char dbg_cells[] PROGMEM = "cells";
 const char dbg_period[] PROGMEM = "period";
+const char dbg_wait_answer[] PROGMEM = "wait";
 const char dbg_rotate[] PROGMEM = "rotate";
 const char dbg_round[] PROGMEM = "Vround";
 const char dbg_correct[] PROGMEM = "Vcorr";
@@ -132,7 +133,8 @@ enum {
 
 enum { // options bits
 	o_average = 0,
-	o_median
+//	o_median = 1,
+	o_equalize_cells_V	// корректировать напряжения на ячейках, чтобы сумма V ячеек соответствовала TotalV
 };
 
 enum I2C_MAP_MODE {
@@ -144,12 +146,13 @@ enum I2C_MAP_MODE {
 };
 
 struct WORK {
-	uint8_t  bms_num = 2;
-	uint8_t  bms_cells_qty = 16;
+	uint8_t  bms_num;
+	uint8_t  bms_cells_qty;
 	uint8_t  options;
-	uint32_t UART_read_period = 1;		// ms, 1 - synch i2C
+	uint32_t UART_read_period;		// ms, 1 - synch i2C
+	uint32_t UART_wait_answer_time;	// ms
 	uint8_t  I2C_bms_rotate_period; // times, period (number of reading) before switch to next bms
-	uint8_t  round = round_true;					// round_*
+	uint8_t  round;					// round_*
 	int16_t  V_correct;				// mV
 	int8_t   temp_correct;			// mV
 	uint8_t  watchdog;				// reboot if no data over: 1 - I2C, 2 - BMS
@@ -168,8 +171,9 @@ struct _EEPROM EEMEM EEPROM = {
 	.work = {
 		.bms_num = 2,
 		.bms_cells_qty = 16,
-		.options = 0,
+		.options = (1<<o_equalize_cells_V),
 		.UART_read_period = 1,
+		.UART_wait_answer_time = BMS_MIN_PAUSE_BETWEEN_READS,
 		.I2C_bms_rotate_period = 5,
 		.round = round_true,
 		.V_correct = 0,
@@ -337,6 +341,10 @@ void DebugSerial_read(void)
 				work.UART_read_period = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
+			} else if(strncmp_P(debug_read_buffer, dbg_wait_answer, sizeof(dbg_wait_answer)-1) == 0) {
+				work.UART_wait_answer_time = d;
+				DEBUG(d);
+				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
 			} else if(strncmp_P(debug_read_buffer, dbg_rotate, sizeof(dbg_rotate)-1) == 0) {
 				work.I2C_bms_rotate_period = d;
 				DEBUG(d);
@@ -431,7 +439,6 @@ uint8_t BMS_send_pgm_cmd(const uint8_t *cmd, uint8_t len, uint8_t crc)
 // JK-DZ11-B2A24S active balancer
 void BMS_Serial_read(void)
 {
-	if(read_bms_num > work.bms_num) return;
 	while(BMS_SERIAL.available()) {
 		int16_t r = BMS_SERIAL.read();
 		bms_last_read_time = millis();
@@ -490,12 +497,13 @@ void BMS_Serial_read(void)
 	//				}
 					DEBUGIF(1,'\n');
 				}
+				int16_t totalV = read_buffer[BMS_OFFSET_TotalV]*256 + read_buffer[BMS_OFFSET_TotalV + 1];
+				int16_t totalV_by_cells = 0;
 	#ifdef DEBUG_TO_SERIAL
 				if(debug == 3) {
 					DEBUG(F("BMS ")); DEBUG(read_bms_num + 1);	DEBUG(' ');
 					if(read_buffer[BMS_OFFSET_BalansOn]) DEBUG(F("ON")); else DEBUG(F("OFF"));
-					uint16_t n = read_buffer[BMS_OFFSET_TotalV]*256 + read_buffer[BMS_OFFSET_TotalV + 1]; // Total V
-					DEBUG(F(",V:")); DEBUG(n / 100); DEBUG('.'); n %= 100; if(n < 10) DEBUG('0'); DEBUG(n);
+					DEBUG(F(",V:")); DEBUG(totalV / 100); DEBUG('.'); if(totalV % 100 < 10) DEBUG('0'); DEBUG(totalV % 100);
 					DEBUG(F(",D(mV):")); DEBUG(read_buffer[BMS_OFFSET_MaxDiffV]*256 + read_buffer[BMS_OFFSET_MaxDiffV + 1]);
 					DEBUG(F(",Trg(mV):")); DEBUG(read_buffer[BMS_OFFSET_TriggerV]*256 + read_buffer[BMS_OFFSET_TriggerV + 1]);
 					DEBUG(F(",Bal(mA):")); DEBUG(read_buffer[BMS_OFFSET_BalansI]*256 + read_buffer[BMS_OFFSET_BalansI + 1]);
@@ -513,9 +521,10 @@ void BMS_Serial_read(void)
 				}
 				int16_t _max = 0;
 				int16_t _min = 32767;
-				for(uint8_t i = 0; i < read_buffer[8]; i++) {
+				uint16_t *p = &bms[read_bms_num][0];
+				for(uint8_t i = 0; i < read_buffer[8]; i++,p++) {
 					if(i > work.bms_cells_qty - 1) {
-						ATOMIC_BLOCK(ATOMIC_FORCEON) bms[read_bms_num][i] = 0;
+						ATOMIC_BLOCK(ATOMIC_FORCEON) *p = 0;
 						continue;
 					}
 					int16_t v = read_buffer[BMS_OFFSET_CellsV_Array + i*2]*256 + read_buffer[BMS_OFFSET_CellsV_Array+1 + i*2];
@@ -549,13 +558,31 @@ void BMS_Serial_read(void)
 					if(work.Vmaxhyst && map_cell_full) {
 						if(v >= map_cell_full && v < map_cell_full + work.Vmaxhyst) v = map_cell_full - 1;
 					}
-					ATOMIC_BLOCK(ATOMIC_FORCEON) bms[read_bms_num][i] = v;
+					ATOMIC_BLOCK(ATOMIC_FORCEON) *p = v;
+					totalV_by_cells += v;
 					if(v > _max) _max = v;
 					if(v < _min) _min = v;
 				}
-				ATOMIC_BLOCK(ATOMIC_FORCEON) {
-					bms_cell_max[read_bms_num] = _max;
-					bms_cell_min[read_bms_num] = _min;
+				bms_cell_max[read_bms_num] = _max;
+				bms_cell_min[read_bms_num] = _min;
+				totalV -= totalV_by_cells;
+				if(bitRead(work.options, o_equalize_cells_V) && totalV != 0) {
+					if(debug) {	DEBUG(F("TotalV diff ")); DEBUG(totalV); DEBUG(": "); }
+					bool allow = false;
+					int8_t d = totalV > 0 ? 1 : -1;
+					while(totalV != 0) {
+						uint16_t *p = &bms[read_bms_num][0];
+						for(uint8_t i = 0; i < read_buffer[8]; i++,p++) {
+							if(allow || ((int16_t)*p > _min && (int16_t)*p < _max)) {
+								ATOMIC_BLOCK(ATOMIC_FORCEON) *p += d;
+								totalV -= d;
+								if(debug) {	DEBUG(i); DEBUG(' '); }
+								if(totalV == 0) break;
+							}
+						}
+						allow = true;
+					}
+					if(debug) {	DEBUGN(allow ? '*' : ' '); }
 				}
 				uint8_t _sel = 0;
 				if(map_mode == M_ON) { // discharge - select battery with min cell
@@ -652,9 +679,10 @@ void setup()
 		else if(work.UART_read_period == 1) DEBUG(F("Synch I2C"));
 		else DEBUG(F("OFF"));
 		DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_period); DEBUGN(F("=0-off,1-synch,X ms)"));
-		DEBUG(F("\nBMS rotate period: ")); DEBUG(work.I2C_bms_rotate_period); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_rotate); DEBUGN(F("=X)"));
+		DEBUG(F("Wait answer from BMS, ms: ")); DEBUG(work.UART_wait_answer_time); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_wait_answer); DEBUGN(F("=X)"));
+		DEBUG(F("BMS rotate period: ")); DEBUG(work.I2C_bms_rotate_period); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_rotate); DEBUGN(F("=X)"));
 		//DEBUG(F("Options(bits: median,average): ")); if(bitRead(work.options, o_average)) DEBUG(F("average ")); if(bitRead(work.options, o_median)) DEBUG(F("median ")); DEBUG("\n");
-		DEBUG(F("Options(bits: average): ")); if(bitRead(work.options, o_average)) DEBUG(F("average ")); if(bitRead(work.options, o_median)) DEBUG(F("median ")); DEBUG("\n");
+		DEBUG(F("Options: ")); if(bitRead(work.options, o_average)) DEBUG(F("average ")); if(bitRead(work.options, o_equalize_cells_V)) DEBUG(F("equalize ")); DEBUGN("(options=+1-average,+2-equalize)");
 		DEBUG(F("BMS voltage round: ")); DEBUG(work.round == round_true ? F("5/4") : work.round == round_cut ? F("cut") : work.round == round_up ? F("up") : F("?"));
 		DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_round); DEBUGN(F("=0-5/4,1-cut,2-up)"));
 		DEBUG(F("BMS voltage correct, mV: ")); DEBUG(work.V_correct); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_correct); DEBUGN(F("=X)"));
@@ -796,7 +824,7 @@ void loop()
 	}
 	if(debugmode != 1) {
 		BMS_Serial_read();
-		if(m - bms_last_read_time > BMS_MIN_PAUSE_BETWEEN_READS) {
+		if(m - bms_last_read_time > work.UART_wait_answer_time) {
 			if(bitRead(flags, f_BMS_Wait_Answer)) {
 				if(!bitRead(flags, f_BMS_ReadOk)) {
 					last_error = ERR_BMS_NotAnswer;
@@ -810,9 +838,10 @@ void loop()
 			}
 			if(bitRead(flags, f_BMS_Need_Read) || bitRead(flags, f_BMS_Wait_Answer)) {
 				read_idx = 0;	// reset read index
+				if(debug == 3) { DEBUG(F("Send to BMS ")); DEBUGN(read_bms_num + 1); }
 				uint8_t crc = BMS_send_pgm_cmd(&BMS_Cmd_Head[0], sizeof(BMS_Cmd_Head), 0);
 				if(delta_new_cnt) {
-					if(debugmode) {	DEBUG(F("Set delta to BMS ")); DEBUGN(read_bms_num + 1); }
+					if(debugmode) {	DEBUGN(F(" Send Delta")); }
 					uint8_t b;
 					BMS_SERIAL.write(read_bms_num + 1);
 					crc += read_bms_num + 1;
