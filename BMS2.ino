@@ -18,8 +18,8 @@ Two active balancers JK-DZ11B2A24S RS485 are supported.
 UART0 (TX,RX) - Debug, setup port
 UART1 (D11,D12) - BMS 1/2
 pin D2 - Debug to UART0 (TX,RX) - connect pin D2 to GND before power on (115200 bps)
-pin D22+D19 -> resistor 0..50 Om -> Buzzer [-] (30 mA MAX)
 pin D3 - Buzzer mute key (to GND)
+pin D4+D5 -> resistor 0..50 Om -> Buzzer [-] (30 mA MAX)
 
 Microart connector RJ-11 (6P6C):
 1 - BMS_DISCHARGE / I2C_SLC_buf_iso (brown-white)
@@ -43,8 +43,9 @@ extern "C" {
 	#include "utility/twi.h"
 }
 
-#define BUZZER_PD1					19
-#define BUZZER_PD2					22
+//#define DEBUG_BMS_SEND
+#define BUZZER_PD1					4
+#define BUZZER_PD2					5
 #define BUZZER_MUTE_PD				3
 #define DEBUG_ACTIVE_PD				2		// activate - connect pin to GND before power on.
 #define LED_PD						LED_BUILTIN
@@ -143,6 +144,7 @@ enum I2C_MAP_MODE {
 	M_ON         = 2,//включенно без сети (работает МАП)
 	M_ONNET      = 3,//включенно с сетью
 	M_ONCHARGE   = 4,//включенно с зарядом
+	M_NOT_READ   = 255
 };
 
 struct WORK {
@@ -214,7 +216,6 @@ uint32_t bms_loop_time;
 uint32_t watchdog_timer = 0;
 uint8_t  watchdog_I2C = 0;
 uint8_t  watchdog_BMS = 0;
-uint8_t  i2c_send_bms_num = 0;
 uint8_t  I2C_bms_send_switch_timer = 0;
 int16_t  map_cell_min = 0;			// *10mV (1 cell)
 int16_t  map_cell_full = 0;			// *10mV (1 cell)
@@ -222,7 +223,7 @@ int16_t  bms_cell_max[BMS_NUM_MAX];		// *10mV
 int16_t  bms_cell_min[BMS_NUM_MAX];		// *10mV
 uint8_t  selected_bms = 0;
 uint8_t  sending_bms = 0;
-uint8_t  map_mode = 0;
+uint8_t  map_mode = M_NOT_READ;
 uint8_t  temp = BMS_NO_TEMP;		// C, +50
 uint8_t  crc;
 uint8_t  last_error = 0;
@@ -436,15 +437,27 @@ uint8_t BMS_send_pgm_cmd(const uint8_t *cmd, uint8_t len, uint8_t crc)
 	return crc;
 }
 
+#ifdef DEBUG_BMS_SEND
+const uint8_t _send1[] PROGMEM = "\xEB\x90\x01\xFF\x1E\xD3\x0F\x69\x14\x13\x02\x00\x00\x00\x07\x00\x00\x00\x05\x03\xE8\x01\x14\x0F\x67\x0F\x6B\x0F\x66\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x67\x0F\x69\x0F\x69\x0F\x69\x0F\x64\x0F\x6B\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x00\x16\x67";
+const uint8_t _send2[] PROGMEM = "\xEB\x90\x01\xFF\x1E\xE4\x0F\x69\x14\x13\x02\x00\x00\x00\x07\x00\x00\x00\x05\x03\xE8\x01\x14\x0F\x69\x0F\x6B\x0F\x66\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x67\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x0F\x69\x00\x16\x7D";
+#endif
+
 // JK-DZ11-B2A24S active balancer
 void BMS_Serial_read(void)
 {
+	if(!bitRead(flags, f_BMS_Wait_Answer)) return;
+#ifdef DEBUG_BMS_SEND
+	for(uint8_t i = 0; i < sizeof(read_buffer); i++) read_buffer[i] = pgm_read_byte(read_bms_num ? &_send2[i] : &_send1[i]);
+	while(1) {
+		{
+#else
 	while(BMS_SERIAL.available()) {
 		int16_t r = BMS_SERIAL.read();
 		bms_last_read_time = millis();
 		if(r == -1) break;
 		read_buffer[read_idx++] = r;
 		if(read_idx == sizeof(read_buffer)) {
+#endif
 			last_error = 0;
 			read_idx = 0;
 			if(read_buffer[0] != 0xEB || read_buffer[1] != 0x90) {
@@ -567,22 +580,52 @@ void BMS_Serial_read(void)
 				bms_cell_min[read_bms_num] = _min;
 				totalV -= totalV_by_cells;
 				if(bitRead(work.options, o_equalize_cells_V) && totalV != 0) {
-					if(debug) {	DEBUG(F("TotalV diff ")); DEBUG(totalV); DEBUG(": "); }
+					if(debug == 3) {
+						DEBUG(F("BMS V="));
+						for(uint8_t i = 0; i < work.bms_cells_qty; i++) { DEBUG(bms[read_bms_num][i]); DEBUG(F(" ")); }
+						DEBUG(F("\nTotalV diff ")); DEBUG(totalV); DEBUG(": ");
+
+					}
 					bool allow = false;
 					int8_t d = totalV > 0 ? 1 : -1;
 					while(totalV != 0) {
 						uint16_t *p = &bms[read_bms_num][0];
+						bool edge_skip = true;
 						for(uint8_t i = 0; i < read_buffer[8]; i++,p++) {
-							if(allow || ((int16_t)*p > _min && (int16_t)*p < _max)) {
-								ATOMIC_BLOCK(ATOMIC_FORCEON) *p += d;
-								totalV -= d;
-								if(debug) {	DEBUG(i); DEBUG(' '); }
-								if(totalV == 0) break;
+							int16_t tmp = *p;
+							if(d == 1) {
+								if(edge_skip && tmp == _min) {
+									edge_skip = false;
+									continue;
+								}
+								tmp++;
+								if(allow || tmp <= _max) {
+									ATOMIC_BLOCK(ATOMIC_FORCEON) *p = tmp;
+									totalV -= d;
+									if(debug == 3) { DEBUG(i); DEBUG(' '); }
+								}
+							} else { // d == -1
+								if(edge_skip && tmp == _max) {
+									edge_skip = false;
+									continue;
+								}
+								tmp--;
+								if(allow || tmp >= _min) {
+									ATOMIC_BLOCK(ATOMIC_FORCEON) *p = tmp;
+									totalV -= d;
+									if(debug == 3) { DEBUG(i); DEBUG(' '); }
+								}
 							}
+							if(totalV == 0) break;
 						}
+						if(debug == 3 && totalV) DEBUG(" * ");
 						allow = true;
 					}
-					if(debug) {	DEBUGN(allow ? '*' : ' '); }
+					if(debug == 3) {
+						DEBUG(F("\nBMS V="));
+						for(uint8_t i = 0; i < work.bms_cells_qty; i++) { DEBUG(bms[read_bms_num][i]); DEBUG(F(" ")); }
+						DEBUG('\n');
+					}
 				}
 				uint8_t _sel = 0;
 				if(map_mode == M_ON) { // discharge - select battery with min cell
@@ -593,23 +636,25 @@ void BMS_Serial_read(void)
 							_sel = i;
 						}
 					}
+					selected_bms = _sel;
 				} else { // select battery with overcharge cell
 					_max = 0;
-					for(uint8_t i = 0; i < work.bms_num; i++) {
-						if(bms_cell_max[i] >= map_cell_full && bms_cell_max[i] > _max) {
-							_max = bms_cell_max[i];
-							_sel = i;
+					if(map_mode != M_NOT_READ) {
+						for(uint8_t i = 0; i < work.bms_num; i++) {
+							if(bms_cell_max[i] >= map_cell_full && bms_cell_max[i] > _max) {
+								_max = bms_cell_max[i];
+								_sel = i;
+							}
 						}
 					}
 					if(_max == 0) {
 						if(I2C_bms_send_switch_timer) I2C_bms_send_switch_timer--;
 						else {
 							I2C_bms_send_switch_timer = work.I2C_bms_rotate_period;
-							if(++i2c_send_bms_num == work.bms_num) i2c_send_bms_num = 0;
+							if(++selected_bms == work.bms_num) selected_bms = 0;
 						}
-					}
+					} else selected_bms = _sel;
 				}
-				selected_bms = _sel;
 				temp = read_buffer[BMS_OFFSET_Temperature + 1] + BMS_Temperature_Correct + work.temp_correct;
 				delta_active = read_buffer[BMS_OFFSET_TriggerV]*256 + read_buffer[BMS_OFFSET_TriggerV + 1];
 				if(read_bms_num == 0) memset(bms_Q, 0, sizeof(bms_Q));
@@ -626,6 +671,9 @@ void BMS_Serial_read(void)
 				DEBUG(F("BMS"));
 				DEBUG(read_bms_num + 1);
 				DEBUG(F(": Wrong response code: ")); DEBUGN(read_buffer[3]);
+			}
+			if(debug == 3) {
+				DEBUG(F("Sel: ")); DEBUGN(selected_bms);
 			}
 			break;
 		}
@@ -662,10 +710,14 @@ void setup()
 	}
 #endif
 	eeprom_read_block(&work, &EEPROM.work, sizeof(EEPROM.work));
+#ifdef DEBUG_BMS_SEND
+	work.bms_cells_qty = 20;
+	work.UART_read_period = 5000;
+	debug = 3;
+#endif
 	memset(bms_Q, 0, sizeof(bms_Q));
 	memset(bms_cell_min, 0, sizeof(bms_cell_min));
 	memset(bms_cell_max, 0, sizeof(bms_cell_max));
-	I2C_bms_send_switch_timer = work.I2C_bms_rotate_period;
 #ifdef DEBUG_TO_SERIAL
 	if(debugmode) {
 		DEBUG(F("BMS: ")); DEBUG(work.bms_num); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_bms); DEBUGN(F("=X)"));
