@@ -119,6 +119,7 @@ const char dbg_I2C_WRITE_BMS[] PROGMEM = "I2C_WRITE_BMS";
 const char dbg_I2C_READ_BMS[] PROGMEM = "I2C_READ_BMS";
 const char dbg_temp[] PROGMEM = "temp";
 const char dbg_delta_change_pause[] PROGMEM = "dchgpause";
+const char dbg_read[] PROGMEM = "read";	// ALL BMS
 #else
 #define DEBUG(s)
 #define DEBUGN(s)
@@ -387,6 +388,9 @@ void DebugSerial_read(void)
 			} else if(strncmp_P(debug_read_buffer, dbg_delta_change_pause, sizeof(dbg_delta_change_pause)-1) == 0) {
 				delta_change_pause = d;
 				DEBUG(d);
+			} else if(strncmp_P(debug_read_buffer, dbg_read, sizeof(dbg_read)-1) == 0) {
+				bitSet(flags, f_BMS_Need_Read);
+				DEBUG(d);
 			} else if(debug_read_buffer[1] >= '0' && debug_read_buffer[1] <= '3' && (!debug_read_buffer[2] || !debug_read_buffer[3])) {
 				if((debug_read_buffer[0] | 0x20) == 'v') { // Vn=x, n={1..bms_cells_qty}, n=0 - all
 					if(d) {
@@ -520,7 +524,7 @@ void BMS_Serial_read(void)
 					DEBUG(F(",D(mV):")); DEBUG(read_buffer[BMS_OFFSET_MaxDiffV]*256 + read_buffer[BMS_OFFSET_MaxDiffV + 1]);
 					DEBUG(F(",Trg(mV):")); DEBUG(read_buffer[BMS_OFFSET_TriggerV]*256 + read_buffer[BMS_OFFSET_TriggerV + 1]);
 					DEBUG(F(",Bal(mA):")); DEBUG(read_buffer[BMS_OFFSET_BalansI]*256 + read_buffer[BMS_OFFSET_BalansI + 1]);
-					//DEBUG(F(",T(C):")); DEBUG(read_buffer[72]);
+					DEBUG(F(",T(C):")); DEBUG(read_buffer[BMS_OFFSET_Temperature + 1]);
 					//DEBUG(F(",W:")); DEBUG(read_buffer[BMS_OFFSET_Cells]); DEBUG(','); DEBUG(read_buffer[BMS_OFFSET_HighV_Cell]); DEBUG(','); DEBUG(read_buffer[BMS_OFFSET_LowV_Cell]); DEBUG(','); DEBUG(read_buffer[BMS_OFFSET_BalansDir]);
 					DEBUG(F("\n"));
 				}
@@ -627,7 +631,7 @@ void BMS_Serial_read(void)
 						DEBUG('\n');
 					}
 				}
-				uint8_t _sel = 0;
+				uint8_t _sel = 0xFF;
 				if(map_mode == M_ON) { // discharge - select battery with min cell
 					_min = 32767;
 					for(uint8_t i = 0; i < work.bms_num; i++) {
@@ -636,7 +640,6 @@ void BMS_Serial_read(void)
 							_sel = i;
 						}
 					}
-					selected_bms = _sel;
 				} else { // select battery with overcharge cell
 					_max = 0;
 					if(map_mode != M_NOT_READ) {
@@ -655,6 +658,8 @@ void BMS_Serial_read(void)
 						}
 					} else selected_bms = _sel;
 				}
+				selected_bms = _sel;
+
 				temp = read_buffer[BMS_OFFSET_Temperature + 1] + BMS_Temperature_Correct + work.temp_correct;
 				delta_active = read_buffer[BMS_OFFSET_TriggerV]*256 + read_buffer[BMS_OFFSET_TriggerV + 1];
 				if(read_bms_num == 0) memset(bms_Q, 0, sizeof(bms_Q));
@@ -751,6 +756,7 @@ void setup()
 		DEBUG((const __FlashStringHelper*)dbg_debug); DEBUGN(F("=0,1,2,3"));
 		DEBUG((const __FlashStringHelper*)dbg_temp); DEBUGN(F("=X"));
 		DEBUG((const __FlashStringHelper*)dbg_delta_change_pause); DEBUGN(F("=X"));
+		DEBUG((const __FlashStringHelper*)dbg_read); DEBUGN(F("=1"));
 		DEBUGN(F("Out: Vn=X (All: n=0)\nQn=X"));
 		DEBUG((const __FlashStringHelper*)dbg_seterr); DEBUGN(F("=X"));
 	}
@@ -942,11 +948,11 @@ void loop()
 				map_cell_min = i2c_receive[2] + 200;
 				map_cell_full = i2c_receive[3] + 200;
 				map_mode = i2c_receive[4];
-				if(debugmode && (debug == 2 || bitRead(debug_info, 0))) {
+				if(debugmode && (debug >= 2 || bitRead(debug_info, 0))) {
 					bitClear(debug_info, 0);
 					DEBUG(F("I2C_W: Min=")); DEBUG(map_cell_min); DEBUG(F(",Max=")); DEBUG(map_cell_full); DEBUG(F(",Mode=")); DEBUGN(map_mode);
 				}
-				if(work.UART_read_period == 1 && bms[0] == 0) bitSet(flags, f_BMS_Need_Read);
+				if(work.UART_read_period == 1) bitSet(flags, f_BMS_Need_Read);
 			} else if(i2c_receive[1] == 6) { // Broadcast I2CCom_JobWR_MPPT
 //				uint8_t A = i2c_receive[8];
 //				if(debug == 2 || bitRead(debug_info, 1)) {
