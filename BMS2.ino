@@ -286,9 +286,9 @@ void I2C_Response() {
 	if(bms_idx == 0) sending_bms = selected_bms;
 	i2c_write(bms[sending_bms][bms_idx] & 0xFF);	// Ucell(low), V, hundreds
 	i2c_write(bms[sending_bms][bms_idx] >> 8);		// Ucell(high), V, hundreds
-	i2c_write(bms_idx == 0 ? temp : BMS_NO_TEMP);	// temp + 50, 255 - none
+	i2c_write(bms_idx == sending_bms ? temp : BMS_NO_TEMP);	// temp + 50, 255 - none
 	i2c_write(bms_Q[bms_idx]);						// Q_Cell, %, I=(Q_Cell/100)*(Ucell/R), R=1
-	i2c_write(bms_idx == 0 ? last_error : 0);		// prev err
+	i2c_write(bms_idx == sending_bms ? last_error : 0);		// prev err
 	crc = 0 - crc;
 	i2c_write(crc);
 	if(++bms_idx == work.bms_cells_qty) bms_idx = 0;
