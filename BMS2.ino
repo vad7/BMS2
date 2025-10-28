@@ -19,7 +19,7 @@ UART0 (TX,RX) - Debug, setup port
 UART1 (D11,D12) - BMS 1/2
 pin D2 - Debug to UART0 (TX,RX) - connect pin D2 to GND before power on (115200 bps)
 pin D3 - Buzzer mute key (to GND)
-pin D4+D5 -> resistor 0..50 Om -> Buzzer [-] (30 mA MAX)
+pin D4+D5 -> resistor 0..50 Om -> Buzzer [+] (40 mA MAX)
 
 Microart connector RJ-11 (6P6C):
 1 - BMS_DISCHARGE / I2C_SLC_buf_iso (brown-white)
@@ -61,6 +61,7 @@ extern "C" {
 #define BMS_CHANGE_DELTA_EQUALIZER  60		// attempts (* ~1 sec)
 #define BMS_CHANGE_DELTA_DISCHARGE  30		// sec, When I2C_MAP_MODE = M_ON balance delta => BalansDelta[max]
 #define BEEP_DURATION				5		// *0.1 sec
+#define BEEP_PAUSE					15		// *0.1 sec
 const uint8_t BMS_Cmd_Head[] PROGMEM = { 0x55, 0xAA };
 const uint8_t BMS_Cmd_Request[] PROGMEM = { 0xFF, 0x00, 0x00 };
 const uint8_t BMS_Cmd_ChangeDelta[] PROGMEM = { 0xF2 };
@@ -820,10 +821,15 @@ void loop()
 			if(beep_time) beep_time--;
 			else {
 				if(beep_cnt) {
-					*portOutputRegister(digitalPinToPort(BUZZER_PD1)) ^= digitalPinToBitMask(BUZZER_PD1);
-					*portOutputRegister(digitalPinToPort(BUZZER_PD2)) ^= digitalPinToBitMask(BUZZER_PD2);
-					beep_cnt--;
-					beep_time = BEEP_DURATION;
+					if(--beep_cnt) {
+						*portOutputRegister(digitalPinToPort(BUZZER_PD1)) ^= digitalPinToBitMask(BUZZER_PD1);
+						*portOutputRegister(digitalPinToPort(BUZZER_PD2)) ^= digitalPinToBitMask(BUZZER_PD2);
+						beep_time = BEEP_DURATION;
+					} else {
+						*portOutputRegister(digitalPinToPort(BUZZER_PD1)) &= ~digitalPinToBitMask(BUZZER_PD1);
+						*portOutputRegister(digitalPinToPort(BUZZER_PD2)) &= ~digitalPinToBitMask(BUZZER_PD2);
+						beep_time = BEEP_PAUSE;
+					}
 				} else if(!bitRead(flags, f_MUTE)) {
 					if(last_error && last_error != beep_num) beep_num = last_error;
 					if(beep_num) beep_cnt = beep_num * 2;
@@ -838,7 +844,7 @@ void loop()
 					bitClear(flags, f_MUTE); // beeper mute off
 					*portOutputRegister(digitalPinToPort(BUZZER_PD1)) |= digitalPinToBitMask(BUZZER_PD1);
 					*portOutputRegister(digitalPinToPort(BUZZER_PD2)) |= digitalPinToBitMask(BUZZER_PD2);
-					beep_cnt = 1;
+					beep_cnt = 1; // 1 beep
 				} else {
 					bitSet(flags, f_MUTE);
 					*portOutputRegister(digitalPinToPort(BUZZER_PD1)) &= ~digitalPinToBitMask(BUZZER_PD1);
