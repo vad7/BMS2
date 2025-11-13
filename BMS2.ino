@@ -22,6 +22,9 @@ pin A1(D15) - Buzzer mute key (to GND)
 pin D8+D9+D10 -> resistor 0..50 Om -> Buzzer [+] (40 mA MAX)
 pin D2 - LCD_RS, D3 - LCD_E, D4..D7 - LCD_DB4..7 - LCD 2004 (20x4) 5V
 pin SDA(A4), SCL(A5) - I2C MAP
+pin A2(D16) - Cell Undervoltage, Active LOW
+pin A3(D17) - Cell Overvoltage, Active LOW, A2+A3 - BMS Error
+pin D13 - Error code (pulses)
 
 Microart connector RJ-11 (6P6C):
 1 - BMS_DISCHARGE / I2C_SLC_buf_iso (brown-white)
@@ -57,8 +60,15 @@ LiquidCrystal lcd( 2,  3,  4,  5,  6,  7);	// LCD 20x4
 #define BUZZER_PD2					9
 #define BUZZER_PD3					10
 #define BUZZER_MUTE_PD				15
-#define DEBUG_ACTIVE_PD				14		// activate - connect pin to GND before power on.
+#define DEBUG_ACTIVE_PD				14	// activate - connect pin to GND before power on.
 #define LED_PD						LED_BUILTIN
+#define OUT_CELL_UNDER_V			16	// A2, active LOW
+#define OUT_CELL_OVER_V				17	// A3, active LOW, OUT_CELL_UNDER_V+OUT_CELL_OVER_V = BMS ERROR
+#define OUT_PULSE_PIN				13
+#define OUT_PULSE_LEVEL				0	// pulses active level - 0/1
+#define OUT_PULSE_HIGH_LEN			25	// *0.1sec
+#define OUT_PULSE_LOW_LEN			25	// *0.1sec
+#define OUT_PULSE_END_LOW_LEN		40	// *0.1sec
 
 #define I2C_FREQ					2500
 #define BMS_NUM_MAX					2		// max number of connected BMS
@@ -219,7 +229,8 @@ enum { // last_error =
 enum { // alarm =
 	ALARM_BMS_Cell_Low = 1,
 	ALARM_BMS_Cell_High = 2,
-	ALARM_BMS_Cell_DeltaMax = 3
+	ALARM_BMS_Cell_DeltaMax = 3,
+	ALARM_BMS_Error = 4
 };
 enum {
 	f_BMS_Ready = 0,
@@ -261,6 +272,8 @@ uint8_t  crc;
 uint8_t  last_error[BMS_NUM_MAX];
 uint8_t  alarm[BMS_NUM_MAX];
 uint8_t  error_alarm_time = 0;
+uint8_t  error_new = 0;
+uint8_t  error_send = 0;
 uint8_t  read_buffer[74];
 int8_t   read_idx = 0;
 uint8_t  i2c_receive[32];
@@ -273,10 +286,13 @@ uint16_t delta_change_pause = 0;  	// sec
 uint8_t  delta_change_equalizer = 0; // attempts
 uint8_t  delta_new_cnt = 0;			// update cnt < max
 uint8_t  debug_info	= 0b0011;		// b0 - I2C_W1, b1 - I2C_W2
-uint8_t  read_bms_num = 0;		// last bms # read
+uint8_t  read_bms_num = 0;			// last bms # read
 uint8_t  beep_num = 0;
 uint8_t  beep_cnt = 0;
 uint8_t  beep_time = 0;
+uint8_t  RWARN_SendCode = 0;
+uint8_t  RWARN_Sending_Low = 0;
+uint8_t  RWARN_Sending_Cnt = 0;
 #ifdef LCD_ENABLED
 uint8_t  LCD_refresh_sec = 3;	// счетчик обновления LCD
 uint8_t  LCD_page = 0;
@@ -592,6 +608,7 @@ void BMS_Serial_read(void)
 	while(1) {
 		{
 #else
+	uint8_t _err = 0;
 	while(BMS_SERIAL.available()) {
 		int16_t r = BMS_SERIAL.read();
 		bms_last_read_time = millis();
@@ -605,6 +622,7 @@ void BMS_Serial_read(void)
 				DEBUGIFN(1,F("BMS: Header mismatch!"));
 				last_error[read_bms_num] = ERR_BMS_Read;
 				error_alarm_time = 50;
+				_err = ALARM_BMS_Error;
 				break;
 			}
 			if(debug == 4) { DEBUG(F("BMS")); DEBUG(read_bms_num + 1); DEBUG(F(" Answer: ")); }
@@ -622,6 +640,7 @@ void BMS_Serial_read(void)
 				DEBUGIFN(1,F(": CRC Error!"));
 				last_error[read_bms_num] = ERR_BMS_Read;
 				error_alarm_time = 50;
+				_err = ALARM_BMS_Error;
 				break;
 			}
 			if(read_buffer[BMS_OFFSET_Cmd] == 0xF2) { // Change delta voltage
@@ -638,12 +657,14 @@ void BMS_Serial_read(void)
 					DEBUGIF(1,F(" Alarm: "));
 					error_alarm_time = 50;
 					if(read_buffer[BMS_OFFSET_Alarm] & (1<<0)) { // cells num wrong
-						last_error[read_bms_num] = ERR_BMS_Config;
 						DEBUGIF(1,F("Cells_Num "));
+						last_error[read_bms_num] = ERR_BMS_Config;
+						_err = ALARM_BMS_Error;
 					}
 					if(read_buffer[BMS_OFFSET_Alarm] & (1<<1)) { // wire resistance is too large
-						last_error[read_bms_num] = ERR_BMS_Resistance;
 						DEBUGIF(1,F("Wire_Resistance "));
+						last_error[read_bms_num] = ERR_BMS_Resistance;
+						_err = ALARM_BMS_Error;
 					}
 	//				if(read_buffer[BMS_OFFSET_Alarm] & (1<<2)) { // battery overvoltage
 	//					last_error = ERR_BMS_Resistance;
@@ -659,10 +680,18 @@ void BMS_Serial_read(void)
 				bms_min_cell_mV[read_bms_num] = read_buffer[BMS_OFFSET_CellsV_Array + read_buffer[BMS_OFFSET_LowV_Cell]*2]*256 + read_buffer[BMS_OFFSET_CellsV_Array+1 + read_buffer[BMS_OFFSET_LowV_Cell]*2];
 				bms_max_string[read_bms_num] = read_buffer[BMS_OFFSET_HighV_Cell];
 				bms_max_cell_mV[read_bms_num] = read_buffer[BMS_OFFSET_CellsV_Array + read_buffer[BMS_OFFSET_HighV_Cell]*2]*256 + read_buffer[BMS_OFFSET_CellsV_Array+1 + read_buffer[BMS_OFFSET_HighV_Cell]*2];
-				if(bms_min_cell_mV[read_bms_num] <= work.cell_min_V) alarm[read_bms_num] = ALARM_BMS_Cell_Low;
-				else if(bms_max_cell_mV[read_bms_num] <= work.cell_max_V) alarm[read_bms_num] = ALARM_BMS_Cell_High;
-				else if(bms_max_cell_mV[read_bms_num] - bms_min_cell_mV[read_bms_num] >= work.cell_delta_max_V) alarm[read_bms_num] = ALARM_BMS_Cell_DeltaMax;
-				else alarm[read_bms_num] = 0;
+				if(bms_min_cell_mV[read_bms_num] <= work.cell_min_V) {
+					_err = ALARM_BMS_Cell_Low;
+					alarm[read_bms_num] = ALARM_BMS_Cell_Low;
+				} else if(bms_max_cell_mV[read_bms_num] <= work.cell_max_V) {
+					_err = ALARM_BMS_Cell_High;
+					alarm[read_bms_num] = ALARM_BMS_Cell_High;
+				} else if(bms_max_cell_mV[read_bms_num] - bms_min_cell_mV[read_bms_num] >= work.cell_delta_max_V) {
+					_err = ALARM_BMS_Cell_DeltaMax;
+					alarm[read_bms_num] = ALARM_BMS_Cell_DeltaMax;
+				} else {
+					alarm[read_bms_num] = 0;
+				}
 	#ifdef DEBUG_TO_SERIAL
 				if(debug == 3) {
 					DEBUG(F("BMS ")); DEBUG(read_bms_num + 1);	DEBUG(' ');
@@ -681,6 +710,7 @@ void BMS_Serial_read(void)
 					DEBUGIFN(1,F(" Cells num not equal setup!"));
 					last_error[read_bms_num] = ERR_BMS_Config;
 					error_alarm_time = 50;
+					_err = ALARM_BMS_Error;
 					if(read_buffer[BMS_OFFSET_Cells] > BMS_CELLS_QTY_MAX) break;
 				}
 				int16_t _max = 0;
@@ -832,6 +862,9 @@ void BMS_Serial_read(void)
 			break;
 		}
 	}
+	if(_err && RWARN_SendCode == 0) {
+		RWARN_SendCode = _err;
+	}
 }
 
 void setup()
@@ -845,6 +878,12 @@ void setup()
 	pinMode(BUZZER_PD2, OUTPUT);
 	pinMode(BUZZER_PD3, OUTPUT);
 	pinMode(BUZZER_MUTE_PD, INPUT_PULLUP);
+	digitalWrite(OUT_CELL_UNDER_V, LOW);
+	pinMode(OUT_CELL_UNDER_V, INPUT_PULLUP);
+	digitalWrite(OUT_CELL_OVER_V, LOW);
+	pinMode(OUT_CELL_OVER_V, INPUT_PULLUP);
+	pinMode(OUT_PULSE_PIN, OUTPUT);
+	digitalWrite(OUT_PULSE_PIN, !OUT_PULSE_LEVEL);
 #ifdef DEBUG_TO_SERIAL
 	DebugSerial.begin(DEBUG_TO_SERIAL_RATE);
 #ifdef DEBUG_ACTIVE_PD
@@ -993,7 +1032,7 @@ void loop()
 		if(debugmode) *portOutputRegister(digitalPinToPort(LED_PD)) |= digitalPinToBitMask(LED_PD);
 		else *portOutputRegister(digitalPinToPort(LED_PD)) ^= digitalPinToBitMask(LED_PD);
 	}
-	if(m - beeping >= 100UL) {
+	if(m - beeping >= 100UL) { // 0.1 sec
 		beeping = m;
 		uint8_t _err = 0;
 		for(uint8_t i = 0; i < BMS_NUM_MAX; i++) {
@@ -1046,6 +1085,22 @@ void loop()
 #ifdef LCD_ENABLED
 				LCD_SCR_last = 255; // refresh screen
 #endif
+			}
+		}
+		if(RWARN_SendCode) {
+			if(RWARN_Sending_Cnt == 0) { // new
+				goto xRWARN_PULSE;
+			} else if(--RWARN_Sending_Cnt == 0) { // next pulse
+				if(RWARN_Sending_Low) {
+					digitalWrite(OUT_PULSE_PIN, !OUT_PULSE_LEVEL);
+					RWARN_Sending_Cnt = RWARN_Sending_Low;
+					RWARN_Sending_Low = 0;
+				} else if(--RWARN_SendCode) {
+xRWARN_PULSE:
+					digitalWrite(OUT_PULSE_PIN, OUT_PULSE_LEVEL);
+					RWARN_Sending_Cnt = OUT_PULSE_HIGH_LEN;
+					RWARN_Sending_Low = RWARN_SendCode == 1 ? OUT_PULSE_END_LOW_LEN : OUT_PULSE_LOW_LEN;
+				}
 			}
 		}
 	}
