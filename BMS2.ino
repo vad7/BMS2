@@ -47,6 +47,7 @@ extern "C" {
 	#include "utility/twi.h"
 }
 
+#define DEBUG_ALWAYS_ON				// DEBUG to UART0(USB) - ON
 #define LCD_ENABLED
 #ifdef LCD_ENABLED
 #include "LiquidCrystal.h"
@@ -202,7 +203,7 @@ struct _EEPROM EEMEM EEPROM = {
 		.bms_num = 2,
 		.bms_cells_qty = 16,
 		.options = (1<<o_equalize_cells_V),
-		.BMS_read_period = 1,
+		.BMS_read_period = 5000,
 		.BMS_wait_answer_time = BMS_MIN_PAUSE_BETWEEN_READS,
 		.I2C_bms_rotate_period = 5,
 		.round = round_true,
@@ -229,8 +230,7 @@ enum { // last_error =
 enum { // alarm =
 	ALARM_BMS_Cell_Low = 1,
 	ALARM_BMS_Cell_High = 2,
-	ALARM_BMS_Cell_DeltaMax = 3,
-	ALARM_BMS_Error = 4
+	ALARM_BMS_Cell_DeltaMax = 3
 };
 enum {
 	f_BMS_Ready = 0,
@@ -238,6 +238,15 @@ enum {
 	f_BMS_Wait_Answer = 2,
 	f_BMS_ReadOk = 3,
 	f_MUTE = 4
+};
+
+enum {
+	RWARN_OK = 1,
+	RWARN_Cell_Low = 2,
+	RWARN_Cell_High = 3,
+	RWARN_Cell_DeltaMax = 4,
+	RWARN_BMS_NotAnswer = 5,
+	RWARN_BMS_Error = 6
 };
 
 uint8_t  flags = (1<<f_BMS_Need_Read);	// f_*
@@ -884,24 +893,28 @@ void setup()
 	pinMode(OUT_CELL_OVER_V, INPUT_PULLUP);
 	pinMode(OUT_PULSE_PIN, OUTPUT);
 	digitalWrite(OUT_PULSE_PIN, !OUT_PULSE_LEVEL);
-#ifdef DEBUG_TO_SERIAL
-	DebugSerial.begin(DEBUG_TO_SERIAL_RATE);
-#ifdef DEBUG_ACTIVE_PD
-	pinMode(DEBUG_ACTIVE_PD, INPUT_PULLUP);
 #ifdef LCD_Backlite_pin
 	pinMode(LCD_Backlite_pin, OUTPUT);
 	digitalWrite(LCD_Backlite_pin, 1);
 #endif
+#ifdef DEBUG_TO_SERIAL
+	DebugSerial.begin(DEBUG_TO_SERIAL_RATE);
+ #ifdef DEBUG_ACTIVE_PD
+	pinMode(DEBUG_ACTIVE_PD, INPUT_PULLUP);
+  #ifdef DEBUG_ALWAYS_ON
+	debugmode = 1;
+  #else
 	wdt_reset();
 	delay(50);
 	debugmode = !(*portInputRegister(digitalPinToPort(DEBUG_ACTIVE_PD)) & digitalPinToBitMask(DEBUG_ACTIVE_PD));
+  #endif
 	wdt_reset();
-#else
+ #else
 	debugmode = 1;
-#endif
-#if defined(__AVR_ATmega328PB__)
+ #endif
+ #if defined(__AVR_ATmega328PB__)
 	debugmode *= 2;
-#endif
+ #endif
 	if(debugmode) {
 		DEBUG(F("\nBMS n->1 gate to Microart, v")); DEBUGN(VERSION);
 		DEBUGN(F("Copyright by Vadim Kulakov (c) 2025, vad7@yahoo.com"));
@@ -1093,11 +1106,18 @@ void loop()
 			} else if(--RWARN_Sending_Cnt == 0) { // next pulse
 				if(RWARN_Sending_Low) {
 					digitalWrite(OUT_PULSE_PIN, !OUT_PULSE_LEVEL);
+
+					DEBUG(F("W:0\n"));
+
+
 					RWARN_Sending_Cnt = RWARN_Sending_Low;
 					RWARN_Sending_Low = 0;
 				} else if(--RWARN_SendCode) {
 xRWARN_PULSE:
 					digitalWrite(OUT_PULSE_PIN, OUT_PULSE_LEVEL);
+
+					DEBUG(RWARN_SendCode == 1 ? F("W:1E\n") : F("W:1\n"));
+
 					RWARN_Sending_Cnt = OUT_PULSE_HIGH_LEN;
 					RWARN_Sending_Low = RWARN_SendCode == 1 ? OUT_PULSE_END_LOW_LEN : OUT_PULSE_LOW_LEN;
 				}
@@ -1140,6 +1160,7 @@ xRWARN_PULSE:
 				if(!bitRead(flags, f_BMS_ReadOk)) {
 					last_error[read_bms_num] = ERR_BMS_NotAnswer;
 					if(debugmode) {	DEBUG(F("BMS not answer: ")); DEBUGN(read_bms_num + 1); }
+					if(RWARN_SendCode == 0) RWARN_SendCode = ALARM_BMS_Error;
 				}
 				if(++read_bms_num == work.bms_num) {
 					read_bms_num = 0;
