@@ -122,7 +122,7 @@ const uint8_t BMS_Cmd_ChangeDelta[] PROGMEM = { 0xF2 };
 #define DEBUGIFN(d,s) { if(debug >= d) DebugSerial.println(s); }
 char	debug_read_buffer[64];
 uint8_t debug_read_idx = 0;
-const char dbg_debug[] PROGMEM = "dbg";
+const char dbg_debug[] PROGMEM = "debug";
 const char dbg_bms[] PROGMEM = "bms";
 const char dbg_cells[] PROGMEM = "cells";
 const char dbg_period[] PROGMEM = "period";
@@ -221,11 +221,15 @@ struct _EEPROM EEMEM EEPROM = {
 	}
 };
 
-enum { // last_error =
+enum { // last_error[n] =
+	ERR_BMS_Ok = 0,
 	ERR_BMS_NotAnswer = 1,
 	ERR_BMS_Read = 2,
 	ERR_BMS_Config = 3,
-	ERR_BMS_Resistance = 4
+	ERR_BMS_Resistance = 4,
+	ERR_BMS_Cell_Low = 5,
+	ERR_BMS_Cell_High = 6,
+	ERR_BMS_Cell_DeltaMax = 7
 };
 enum { // alarm =
 	ALARM_BMS_Cell_Low = 1,
@@ -241,12 +245,13 @@ enum {
 };
 
 enum {
+//	RWARN_NONE = 0,
 	RWARN_OK = 1,
-	RWARN_Cell_Low = 2,
-	RWARN_Cell_High = 3,
-	RWARN_Cell_DeltaMax = 4,
-	RWARN_BMS_NotAnswer = 5,
-	RWARN_BMS_Error = 6
+	RWARN_BMS_NotAnswer = 2,
+	RWARN_BMS_Error = 3,
+	RWARN_Cell_Low = 4,
+	RWARN_Cell_High = 5,
+	RWARN_Cell_DeltaMax = 6
 };
 
 uint8_t  flags = (1<<f_BMS_Need_Read);	// f_*
@@ -326,6 +331,31 @@ void FlashLED(uint8_t num, uint8_t ton, uint8_t toff) {
 		digitalWrite(LED_PD, LOW);
 		Delay100ms(toff);
 	}
+}
+
+void Set_New_Error(uint8_t _err)
+{
+	if(_err) {
+		last_error[read_bms_num] = _err;
+		if(RWARN_SendCode == 0) {
+			for(uint8_t i = 0; i < BMS_NUM_MAX; i++) {
+				uint8_t d;
+				if((d = last_error[i])) {
+					if(d == ERR_BMS_NotAnswer) d = RWARN_BMS_NotAnswer;
+					else if(d == ERR_BMS_Read) d = RWARN_BMS_Error;
+					else if(d == ERR_BMS_Config) d = RWARN_BMS_Error;
+					else if(d == ERR_BMS_Resistance) d = RWARN_BMS_Error;
+					else if(d == ERR_BMS_Cell_Low) d = RWARN_Cell_Low;
+					else if(d == ERR_BMS_Cell_High) d = RWARN_Cell_High;
+					else if(d == ERR_BMS_Cell_DeltaMax) d = RWARN_Cell_DeltaMax;
+					RWARN_SendCode = d;
+					if(debug) {	DEBUG(F("New Warn: "));	DEBUGN(d); }
+					break;
+				}
+			}
+		}
+	}
+	if(RWARN_SendCode == 0) RWARN_SendCode = RWARN_OK; else error_alarm_time = 50;
 }
 
 void i2c_set_slave_addr(uint8_t addr)
@@ -545,7 +575,7 @@ void DebugSerial_read(void)
 				debug = d;
 				DEBUG(d);
 			} else if(strncmp_P(debug_read_buffer, dbg_seterr, sizeof(dbg_seterr)-1) == 0) {
-				last_error[read_bms_num] = d;
+				Set_New_Error(d);
 				DEBUG(d);
 			} else if(strncmp_P(debug_read_buffer, dbg_delta_change_pause, sizeof(dbg_delta_change_pause)-1) == 0) {
 				delta_change_pause = d;
@@ -617,7 +647,7 @@ void BMS_Serial_read(void)
 	while(1) {
 		{
 #else
-	uint8_t _err = 0;
+	uint8_t _err = 255;
 	while(BMS_SERIAL.available()) {
 		int16_t r = BMS_SERIAL.read();
 		bms_last_read_time = millis();
@@ -625,13 +655,11 @@ void BMS_Serial_read(void)
 		read_buffer[read_idx++] = r;
 		if(read_idx == sizeof(read_buffer)) {
 #endif
-			last_error[read_bms_num] = 0;
+			_err = ERR_BMS_Ok;
 			read_idx = 0;
 			if(read_buffer[0] != 0xEB || read_buffer[1] != 0x90) {
 				DEBUGIFN(1,F("BMS: Header mismatch!"));
-				last_error[read_bms_num] = ERR_BMS_Read;
-				error_alarm_time = 50;
-				_err = ALARM_BMS_Error;
+				_err = ERR_BMS_Read;
 				break;
 			}
 			if(debug == 4) { DEBUG(F("BMS")); DEBUG(read_bms_num + 1); DEBUG(F(" Answer: ")); }
@@ -647,9 +675,7 @@ void BMS_Serial_read(void)
 				DEBUGIF(1,F("BMS"));
 				DEBUGIF(1, read_bms_num + 1);
 				DEBUGIFN(1,F(": CRC Error!"));
-				last_error[read_bms_num] = ERR_BMS_Read;
-				error_alarm_time = 50;
-				_err = ALARM_BMS_Error;
+				_err = ERR_BMS_Read;
 				break;
 			}
 			if(read_buffer[BMS_OFFSET_Cmd] == 0xF2) { // Change delta voltage
@@ -664,16 +690,13 @@ void BMS_Serial_read(void)
 					DEBUGIF(1,F("BMS"));
 					DEBUGIF(1, read_bms_num + 1);
 					DEBUGIF(1,F(" Alarm: "));
-					error_alarm_time = 50;
 					if(read_buffer[BMS_OFFSET_Alarm] & (1<<0)) { // cells num wrong
 						DEBUGIF(1,F("Cells_Num "));
-						last_error[read_bms_num] = ERR_BMS_Config;
-						_err = ALARM_BMS_Error;
+						_err = ERR_BMS_Config;
 					}
 					if(read_buffer[BMS_OFFSET_Alarm] & (1<<1)) { // wire resistance is too large
 						DEBUGIF(1,F("Wire_Resistance "));
-						last_error[read_bms_num] = ERR_BMS_Resistance;
-						_err = ALARM_BMS_Error;
+						_err = ERR_BMS_Resistance;
 					}
 	//				if(read_buffer[BMS_OFFSET_Alarm] & (1<<2)) { // battery overvoltage
 	//					last_error = ERR_BMS_Resistance;
@@ -690,16 +713,12 @@ void BMS_Serial_read(void)
 				bms_max_string[read_bms_num] = read_buffer[BMS_OFFSET_HighV_Cell];
 				bms_max_cell_mV[read_bms_num] = read_buffer[BMS_OFFSET_CellsV_Array + read_buffer[BMS_OFFSET_HighV_Cell]*2]*256 + read_buffer[BMS_OFFSET_CellsV_Array+1 + read_buffer[BMS_OFFSET_HighV_Cell]*2];
 				if(bms_min_cell_mV[read_bms_num] <= work.cell_min_V) {
-					_err = ALARM_BMS_Cell_Low;
-					alarm[read_bms_num] = ALARM_BMS_Cell_Low;
+					_err = ERR_BMS_Cell_Low;
 				} else if(bms_max_cell_mV[read_bms_num] <= work.cell_max_V) {
-					_err = ALARM_BMS_Cell_High;
+					_err = ERR_BMS_Cell_High;
 					alarm[read_bms_num] = ALARM_BMS_Cell_High;
 				} else if(bms_max_cell_mV[read_bms_num] - bms_min_cell_mV[read_bms_num] >= work.cell_delta_max_V) {
-					_err = ALARM_BMS_Cell_DeltaMax;
-					alarm[read_bms_num] = ALARM_BMS_Cell_DeltaMax;
-				} else {
-					alarm[read_bms_num] = 0;
+					_err = ERR_BMS_Cell_DeltaMax;
 				}
 	#ifdef DEBUG_TO_SERIAL
 				if(debug == 3) {
@@ -717,9 +736,7 @@ void BMS_Serial_read(void)
 				if(read_buffer[BMS_OFFSET_Cells] != work.bms_cells_qty) {
 					DEBUGIF(1,F("BMS"));  DEBUGIF(1, read_bms_num + 1);
 					DEBUGIFN(1,F(" Cells num not equal setup!"));
-					last_error[read_bms_num] = ERR_BMS_Config;
-					error_alarm_time = 50;
-					_err = ALARM_BMS_Error;
+					_err = ERR_BMS_Config;
 					if(read_buffer[BMS_OFFSET_Cells] > BMS_CELLS_QTY_MAX) break;
 				}
 				int16_t _max = 0;
@@ -858,6 +875,7 @@ void BMS_Serial_read(void)
 					bitSet(flags, f_BMS_Ready);
 					bms_loop_time = millis();
 				}
+				if(_err == 0) _err = RWARN_OK;
 				bitSet(flags, f_BMS_ReadOk);
 				watchdog_BMS = 0;
 			} else if(debug) {
@@ -871,9 +889,7 @@ void BMS_Serial_read(void)
 			break;
 		}
 	}
-	if(_err && RWARN_SendCode == 0) {
-		RWARN_SendCode = _err;
-	}
+	if(_err != 255) Set_New_Error(_err);
 }
 
 void setup()
@@ -1158,9 +1174,8 @@ xRWARN_PULSE:
 		if(m - bms_last_read_time > work.BMS_wait_answer_time) {
 			if(bitRead(flags, f_BMS_Wait_Answer)) {
 				if(!bitRead(flags, f_BMS_ReadOk)) {
-					last_error[read_bms_num] = ERR_BMS_NotAnswer;
 					if(debugmode) {	DEBUG(F("BMS not answer: ")); DEBUGN(read_bms_num + 1); }
-					if(RWARN_SendCode == 0) RWARN_SendCode = ALARM_BMS_Error;
+					Set_New_Error(ERR_BMS_NotAnswer);
 				}
 				if(++read_bms_num == work.bms_num) {
 					read_bms_num = 0;
