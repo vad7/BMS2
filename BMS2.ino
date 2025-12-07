@@ -47,7 +47,7 @@ extern "C" {
 	#include "utility/twi.h"
 }
 
-#define DEBUG_ALWAYS_ON				// DEBUG to UART0(USB) - ON
+//#define DEBUG_ALWAYS_ON				// DEBUG to UART0(USB) - ON
 #define LCD_ENABLED
 #ifdef LCD_ENABLED
 #include "LiquidCrystal.h"
@@ -1122,18 +1122,13 @@ void loop()
 			} else if(--RWARN_Sending_Cnt == 0) { // next pulse
 				if(RWARN_Sending_Low) {
 					digitalWrite(OUT_PULSE_PIN, !OUT_PULSE_LEVEL);
-
-					DEBUG(F("W:0\n"));
-
-
+//					DEBUG(F("W:0\n"));
 					RWARN_Sending_Cnt = RWARN_Sending_Low;
 					RWARN_Sending_Low = 0;
 				} else if(--RWARN_SendCode) {
 xRWARN_PULSE:
 					digitalWrite(OUT_PULSE_PIN, OUT_PULSE_LEVEL);
-
-					DEBUG(RWARN_SendCode == 1 ? F("W:1E\n") : F("W:1\n"));
-
+//					DEBUG(RWARN_SendCode == 1 ? F("W:1E\n") : F("W:1\n"));
 					RWARN_Sending_Cnt = OUT_PULSE_HIGH_LEN;
 					RWARN_Sending_Low = RWARN_SendCode == 1 ? OUT_PULSE_END_LOW_LEN : OUT_PULSE_LOW_LEN;
 				}
