@@ -25,6 +25,7 @@ pin SDA(A4), SCL(A5) - I2C MAP
 pin A2(D16) - Cell Undervoltage, Active LOW
 pin A3(D17) - Cell Overvoltage, Active LOW, A2+A3 - BMS Error
 pin D13 - Error code (pulses)
+pin D20 - LED
 
 Microart connector RJ-11 (6P6C):
 1 - BMS_DISCHARGE / I2C_SLC_buf_iso (brown-white)
@@ -62,7 +63,7 @@ LiquidCrystal lcd( 2,  3,  4,  5,  6,  7);	// LCD 20x4
 #define BUZZER_PD3					10
 #define BUZZER_MUTE_PD				15
 #define DEBUG_ACTIVE_PD				14	// activate - connect pin to GND before power on.
-#define LED_PD						LED_BUILTIN
+#define LED_PD						20
 #define OUT_CELL_UNDER_V			16	// A2, active LOW
 #define OUT_CELL_OVER_V				17	// A3, active LOW, OUT_CELL_UNDER_V+OUT_CELL_OVER_V = BMS ERROR
 #define OUT_PULSE_PIN				13
@@ -400,6 +401,7 @@ void I2C_Receive(int howMany) {
 #define LCD_SCR_last_page 	0
 #define LCD_SCR_last_err1	1
 #define LCD_SCR_last_err2	2
+#define LCD_SCR_last_pls	7
 uint8_t LCD_SCR_last = 255;
 int32_t LCD_SCR_TotalV[BMS_NUM_MAX];
 uint16_t LCD_SCR_MinCellV[BMS_NUM_MAX];
@@ -440,8 +442,12 @@ void LCD_Display(void)
 		bitClear(LCD_SCR_last, LCD_SCR_last_page);
 		for(uint8_t i = 0; i < 2; i++) {
 			if(refresh_all) {
-				lcd.print('B'); lcd.print(i+1); lcd.print(F(": "));
-			} else lcd.setCursor(4, i*2);
+				lcd.setCursor(0, i*2);
+				lcd.print('B');
+			} else lcd.setCursor(1, i*2);
+			lcd.print(bitRead(LCD_SCR_last, LCD_SCR_last_pls) ? ':' : '.');
+			bitToggle(LCD_SCR_last, LCD_SCR_last_pls);
+			lcd.print(' ');
 			uint16_t sub_min = LCD_SCR_MinCellV[i] - bms_min_cell_mV[i];
 			uint16_t sub_max = LCD_SCR_MaxCellV[i] - bms_max_cell_mV[i];
 			if(last_error[i]) {
@@ -1055,12 +1061,22 @@ void loop()
 #endif
 	}
 	m = millis();
+#ifdef LCD_ENABLED
+	if(error_alarm_time) {
+		if(m - led_flashing >= 300UL) {
+			led_flashing = m;
+			if(error_alarm_time) error_alarm_time--;
+			*portOutputRegister(digitalPinToPort(LED_PD)) ^= digitalPinToBitMask(LED_PD);
+		}
+	} else *portOutputRegister(digitalPinToPort(LED_PD)) &= ~digitalPinToBitMask(LED_PD);
+#else
 	if(m - led_flashing >= (error_alarm_time == 0 ? 1500UL : 200UL)) {
 		led_flashing = m;
 		if(error_alarm_time) error_alarm_time--;
 		if(debugmode) *portOutputRegister(digitalPinToPort(LED_PD)) |= digitalPinToBitMask(LED_PD);
 		else *portOutputRegister(digitalPinToPort(LED_PD)) ^= digitalPinToBitMask(LED_PD);
 	}
+#endif
 	if(m - beeping >= 100UL) { // 0.1 sec
 		beeping = m;
 		uint8_t _err = 0;
