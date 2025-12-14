@@ -17,9 +17,9 @@ Connections (Arduino Nano):
 Two active balancers JK-DZ11B2A24S RS485 are supported.
 UART0 (TX,RX) - Debug, setup port
 UART1 (D11,D12) - BMS 1/2
-pin A1(D14) - Debug to UART0 (TX,RX) - connect pin to GND before power on (115200 bps)
-pin A1(D15) - Buzzer mute key (to GND)
-pin D8+D9+D10 -> resistor 0..50 Om -> Buzzer [+] (40 mA MAX)
+pin A1(D14) - Debug to UART0 (TX,RX) - connect pin to GND before power on (115200 bps), buzzer will be off
+pin A1(D15) - Key1 (to GND)
+pin D8+D9+D10 -> resistor 0..50 Om -> Buzzer [+] (40 mA MAX), all pins must be on the same port!
 pin D2 - LCD_RS, D3 - LCD_E, D4..D7 - LCD_DB4..7 - LCD 2004 (20x4) 5V
 pin SDA(A4), SCL(A5) - I2C MAP
 pin A2(D16) - Cell Undervoltage, Active LOW
@@ -55,8 +55,8 @@ extern "C" {
 #define BUZZER_PD1					8
 #define BUZZER_PD2					9
 #define BUZZER_PD3					10
-#define BUZZER_MUTE_PD				15
-#define DEBUG_ACTIVE_PD				14	// activate - connect pin to GND before power on.
+#define KEY1						15
+#define DEBUG_ACTIVE_PD				14	// activate - connect pin to GND before power on, buzzer -> off
 #define LED_PD						25
 #define LCD_ENABLED
 #ifdef LCD_ENABLED
@@ -85,7 +85,7 @@ LiquidCrystal lcd( 2,  3,  4,  5,  6,  7);	// LCD 20x4
 #define BMS_CHANGE_DELTA_EQUALIZER  60		// attempts (* ~1 sec)
 #define BMS_CHANGE_DELTA_DISCHARGE  30		// sec, When I2C_MAP_MODE = M_ON balance delta => BalansDelta[max]
 #define BEEP_DURATION				5		// *0.1 sec
-#define BEEP_PAUSE					15		// *0.1 sec
+#define BEEP_PAUSE					40		// *0.1 sec
 const uint8_t BMS_Cmd_Head[] PROGMEM = { 0x55, 0xAA };
 const uint8_t BMS_Cmd_Request[] PROGMEM = { 0xFF, 0x00, 0x00 };
 const uint8_t BMS_Cmd_ChangeDelta[] PROGMEM = { 0xF2 };
@@ -244,8 +244,7 @@ enum {
 	f_BMS_Ready = 0,
 	f_BMS_Need_Read = 1,
 	f_BMS_Wait_Answer = 2,
-	f_BMS_ReadOk = 3,
-	f_MUTE = 4
+	f_BMS_ReadOk = 3
 };
 
 enum {
@@ -404,7 +403,7 @@ void I2C_Receive(int howMany) {
 #define LCD_SCR_last_err1	1
 #define LCD_SCR_last_err2	2
 #define LCD_SCR_last_pls	7
-uint8_t LCD_SCR_last = 255;
+uint8_t LCD_SCR_last = 127;
 int32_t LCD_SCR_TotalV[BMS_NUM_MAX];
 uint16_t LCD_SCR_MinCellV[BMS_NUM_MAX];
 uint16_t LCD_SCR_MaxCellV[BMS_NUM_MAX];
@@ -464,12 +463,32 @@ void LCD_Display(void)
 				if(LCD_SCR_TotalV[i] != bms_totalV[i] || refresh_all) {
 					lcd.print(' ');
 					LCD_print_num_d3(LCD_SCR_TotalV[i] = bms_totalV[i]);
-					lcd.print(F("V  "));
+					lcd.print(F("V"));
 				}
 				if(sub_min != 0 || sub_max != 0 || refresh_all) {
-					lcd.setCursor(14, i*2 + 1);
-					lcd.print(0xA5); // '·'
-					LCD_print_num_d3(bms_max_cell_mV[i] - bms_min_cell_mV[i]);
+					uint16_t n = bms_max_cell_mV[i] - bms_min_cell_mV[i];
+					if(debugmode && i == 0) {
+						lcd.setCursor(n > 99 ? 15 : 16, i*2 + 1);
+						lcd.print(0xA5); // '·'
+						lcd.print(n);
+						if(n < 1000) {
+							lcd.print(' ');
+							if(n < 100) lcd.print(' ');
+							if(n < 10) lcd.print(' ');
+						}
+						if(bitRead(LCD_SCR_last, LCD_SCR_last_pls)) lcd.print('D');
+					} else {
+						lcd.setCursor(n > 999 ? 15 : 16, i*2 + 1);
+						lcd.print(0xA5); // '·'
+						lcd.print(n);
+						if(n < 100) {
+							lcd.print(' ');
+							if(n < 10) lcd.print(' ');
+						}
+					}
+				} else if(i == 0) {
+					lcd.setCursor(19, 0);
+					lcd.print(bitRead(LCD_SCR_last, LCD_SCR_last_pls) ? 'D' : ' ');
 				}
 			}
 			if(sub_min != 0 || refresh_all) {
@@ -911,7 +930,7 @@ void setup()
 	pinMode(BUZZER_PD1, OUTPUT);
 	pinMode(BUZZER_PD2, OUTPUT);
 	pinMode(BUZZER_PD3, OUTPUT);
-	pinMode(BUZZER_MUTE_PD, INPUT_PULLUP);
+	pinMode(KEY1, INPUT_PULLUP);
 	digitalWrite(OUT_CELL_UNDER_V, LOW);
 	pinMode(OUT_CELL_UNDER_V, INPUT_PULLUP);
 	digitalWrite(OUT_CELL_OVER_V, LOW);
@@ -940,13 +959,23 @@ void setup()
 	debugmode = 1;
  #endif
  #if defined(__AVR_ATmega328PB__)
-	debugmode *= 2;
+	debugmode <<= 1;
  #endif
 	if(debugmode) {
 		DEBUG(F("\nBMS n->1 gate to Microart, v")); DEBUGN(VERSION);
 		DEBUGN(F("Copyright by Vadim Kulakov (c) 2025, vad7@yahoo.com"));
 	}
 #endif
+	if(digitalPinToPort(BUZZER_PD1) != digitalPinToPort(BUZZER_PD2) || digitalPinToPort(BUZZER_PD2) != digitalPinToPort(BUZZER_PD3)) {
+		while(1) {
+			wdt_reset();
+#ifdef DEBUG_TO_SERIAL
+			DEBUGN(F("ERROR #define BUZZER_PD* - PINS PORTS ARE NOT THE SAME!"));
+#endif
+			*portOutputRegister(digitalPinToPort(LED_PD)) ^= digitalPinToBitMask(LED_PD);
+			delay(500);
+		}
+	}
 	eeprom_read_block(&work, &EEPROM.work, sizeof(EEPROM.work));
 #ifdef DEBUG_BMS_SEND
 	work.bms_cells_qty = 20;
@@ -1056,50 +1085,42 @@ void loop()
 #endif
 	if(m - beeping >= 100UL) { // 0.1 sec
 		beeping = m;
-		if(_err || beep_cnt || beep_num) {
+		uint8_t d  = !(*portInputRegister(digitalPinToPort(DEBUG_ACTIVE_PD)) & digitalPinToBitMask(DEBUG_ACTIVE_PD));
+#if defined(__AVR_ATmega328PB__)
+		d <<= 1;
+#endif
+		if(d != debugmode) {
+			beep_num = 255;	// short beep
+#ifdef LCD_ENABLED
+			LCD_SCR_last = 127; // refresh screen
+#endif
+		}
+		debugmode = d;
+		if((_err && !debugmode) || beep_cnt || beep_num) {
 			if(beep_time) beep_time--;
 			else {
 				if(beep_cnt) {
 					if(--beep_cnt) {
-						*portOutputRegister(digitalPinToPort(BUZZER_PD1)) ^= digitalPinToBitMask(BUZZER_PD1);
-						*portOutputRegister(digitalPinToPort(BUZZER_PD2)) ^= digitalPinToBitMask(BUZZER_PD2);
-						*portOutputRegister(digitalPinToPort(BUZZER_PD3)) ^= digitalPinToBitMask(BUZZER_PD3);
+						*portOutputRegister(digitalPinToPort(BUZZER_PD1)) ^= digitalPinToBitMask(BUZZER_PD1)|digitalPinToBitMask(BUZZER_PD2)|digitalPinToBitMask(BUZZER_PD3);
 						beep_time = BEEP_DURATION;
 					} else {
-						*portOutputRegister(digitalPinToPort(BUZZER_PD1)) &= ~digitalPinToBitMask(BUZZER_PD1);
-						*portOutputRegister(digitalPinToPort(BUZZER_PD2)) &= ~digitalPinToBitMask(BUZZER_PD2);
-						*portOutputRegister(digitalPinToPort(BUZZER_PD3)) &= ~digitalPinToBitMask(BUZZER_PD3);
+						*portOutputRegister(digitalPinToPort(BUZZER_PD1)) &= ~(digitalPinToBitMask(BUZZER_PD1)|digitalPinToBitMask(BUZZER_PD2)|digitalPinToBitMask(BUZZER_PD3));
 						beep_time = BEEP_PAUSE;
 					}
-				} else if(!bitRead(flags, f_MUTE)) {
-					if(_err && _err != beep_num) beep_num = _err;
-					if(beep_num) beep_cnt = beep_num * 2;
-					beep_time = BEEP_DURATION;
-				}
-			}
-		}
-		if(bitRead(flags, f_MUTE) || beep_num) {
-			uint8_t d = !(*portInputRegister(digitalPinToPort(BUZZER_MUTE_PD)) & digitalPinToBitMask(BUZZER_MUTE_PD));
-			if(d) {
-				if(bitRead(flags, f_MUTE)) {
-					bitClear(flags, f_MUTE); // beeper mute off
-					*portOutputRegister(digitalPinToPort(BUZZER_PD1)) |= digitalPinToBitMask(BUZZER_PD1);
-					*portOutputRegister(digitalPinToPort(BUZZER_PD2)) |= digitalPinToBitMask(BUZZER_PD2);
-					*portOutputRegister(digitalPinToPort(BUZZER_PD3)) |= digitalPinToBitMask(BUZZER_PD3);
-					beep_cnt = 1; // 1 beep
 				} else {
-					bitSet(flags, f_MUTE);
-					*portOutputRegister(digitalPinToPort(BUZZER_PD1)) &= ~digitalPinToBitMask(BUZZER_PD1);
-					*portOutputRegister(digitalPinToPort(BUZZER_PD2)) &= ~digitalPinToBitMask(BUZZER_PD2);
-					*portOutputRegister(digitalPinToPort(BUZZER_PD3)) &= ~digitalPinToBitMask(BUZZER_PD3);
-					beep_cnt = 0;
+					if(_err && _err != beep_num) beep_num = _err;
+					if(beep_num) {
+						if(beep_num == 255) {
+							*portOutputRegister(digitalPinToPort(BUZZER_PD1)) |= digitalPinToBitMask(BUZZER_PD1)|digitalPinToBitMask(BUZZER_PD2)|digitalPinToBitMask(BUZZER_PD3);
+							beep_cnt = 1;
+							beep_time = 0;
+						} else {
+							beep_cnt = beep_num * 2;
+							beep_time = BEEP_DURATION;
+						}
+						beep_num = 0;
+					}
 				}
-				beeping += 1000UL; // pause
-				beep_num = 0;
-				beep_time = 0;
-#ifdef LCD_ENABLED
-				LCD_SCR_last = 255; // refresh screen
-#endif
 			}
 		}
 		if(RWARN_SendCode) {
