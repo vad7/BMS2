@@ -42,11 +42,12 @@ Microart connector RJ-11 (6P6C):
 #include "Arduino.h"
 #include <avr/wdt.h>
 #include <avr/sleep.h>
+#include <avr/interrupt.h>
 #include <util/atomic.h>
-#include <Wire.h>
 extern "C" {
 	#include "utility/twi.h"
 }
+#include <Wire.h>
 
 //#define DEBUG_ALWAYS_ON				// DEBUG to UART0(USB) - ON
 //#define DEBUG_BMS_SEND
@@ -311,6 +312,10 @@ uint8_t  read_bms_num = 0;			// last bms # read
 uint8_t  beep_num = 0;
 uint8_t  beep_cnt = 0;
 uint8_t  beep_time = 0;
+uint8_t  key1_status = 0;
+uint8_t  key1_delay = 0;		// 0.1s
+uint8_t  key1_PIN;
+uint8_t  key1_MASK;
 uint8_t  RWARN_SendCode = 0;
 uint8_t  RWARN_Sending_Low = 0;
 uint8_t  RWARN_Sending_Cnt = 0;
@@ -318,6 +323,22 @@ uint8_t  RWARN_Sending_Cnt = 0;
 uint8_t  LCD_refresh_sec = 3;	// счетчик обновления LCD
 uint8_t  LCD_page = 0;
 #endif
+
+ISR(PCINT0_vect) {
+	uint8_t b = key1_PIN & key1_MASK;
+	if(b && !key1_status) {
+		key1_status = 1;
+		key1_delay = 2;
+	} else if(!b && key1_status) {
+		key1_status = 0;
+		key1_delay = 2;
+	}
+}
+
+ISR(PCINT1_vect, ISR_ALIASOF(PCINT0_vect));
+ISR(PCINT2_vect, ISR_ALIASOF(PCINT0_vect));
+ISR(PCINT3_vect, ISR_ALIASOF(PCINT0_vect));
+
 // Called in delay()
 void yield(void)
 {
@@ -940,10 +961,10 @@ void setup()
 	PRR0 = (1<<PRSPI0) | (1<<PRADC); // Power off: SPIs, ADC, PTC
 	PRR1 = (1<<PRPTC) | (1<<PRSPI1);
 	BMS_SERIAL.begin(BMS_SERIAL_RATE);
-	pinMode(BUZZER_PD1, OUTPUT);
-	pinMode(BUZZER_PD2, OUTPUT);
-	pinMode(BUZZER_PD3, OUTPUT);
 	pinMode(KEY1, INPUT_PULLUP);
+	bitSet(key1_PIN = *digitalPinToPCMSK(KEY1), key1_MASK = digitalPinToPCMSKbit(KEY1));
+	bitSet(*digitalPinToPCICR(KEY1), digitalPinToPCICRbit(KEY1));
+	pinMode(BUZZER_PD1, OUTPUT); pinMode(BUZZER_PD2, OUTPUT); pinMode(BUZZER_PD3, OUTPUT);
 	digitalWrite(OUT_CELL_UNDER_V, LOW);
 	pinMode(OUT_CELL_UNDER_V, INPUT_PULLUP);
 	digitalWrite(OUT_CELL_OVER_V, LOW);
