@@ -155,6 +155,10 @@ const char dbg_read[] PROGMEM = "read";	// ALL BMS
 #define DEBUGIF(d,s)
 #define DEBUGIFN(d,s)
 #endif
+const char sERR_BMS_NotAnswer[] PROGMEM	= "NOT ANSWER";
+const char sERR_BMS_Read[] PROGMEM		= "READ ERROR";
+const char sERR_BMS_Resistance[] PROGMEM= "BAD WIRES";
+const char sERR_BMS_Config[] PROGMEM	= "CFG ERROR";
 
 enum {
 	round_true = 0,
@@ -408,12 +412,17 @@ int32_t LCD_SCR_TotalV[BMS_NUM_MAX];
 uint16_t LCD_SCR_MinCellV[BMS_NUM_MAX];
 uint16_t LCD_SCR_MaxCellV[BMS_NUM_MAX];
 
-void LCD_Display_Err(uint8_t _err)
+// Outs error text and fills remaining space in string with spaces
+void LCD_Display_Err(uint8_t _err, uint8_t space)
 {
-	if(_err == ERR_BMS_NotAnswer) lcd.print(F("NOT ANSWER"));
-	else if(_err == ERR_BMS_Read) lcd.print(F("READ ERROR"));
-	else if(_err == ERR_BMS_Resistance) lcd.print(F("BAD WIRES"));
-	else if(_err == ERR_BMS_Config) lcd.print(F("CFG ERROR"));
+	const char *str;
+	if(_err == ERR_BMS_NotAnswer) str = sERR_BMS_NotAnswer;
+	else if(_err == ERR_BMS_Read) str = sERR_BMS_Read;
+	else if(_err == ERR_BMS_Resistance) str = sERR_BMS_Resistance;
+	else if(_err == ERR_BMS_Config) str = sERR_BMS_Config;
+	lcd.print(str);
+	int8_t n = space - strlen(str);
+	while(n-- > 0) lcd.print(' ');
 }
 
 // n.nnn
@@ -451,7 +460,11 @@ void LCD_Display(void)
 			uint16_t sub_min = LCD_SCR_MinCellV[i] - bms_min_cell_mV[i];
 			uint16_t sub_max = LCD_SCR_MaxCellV[i] - bms_max_cell_mV[i];
 			if(last_error[i]) {
-				LCD_Display_Err(last_error[i]);
+				LCD_Display_Err(last_error[i], 16);
+				if(debugmode && i == 0 && bitRead(LCD_SCR_last, LCD_SCR_last_pls)) {
+					lcd.setCursor(19, 0);
+					lcd.print('D');
+				}
 				bitSet(LCD_SCR_last, LCD_SCR_last_err1 + i);
 			} else {
 				if(bitRead(LCD_SCR_last, LCD_SCR_last_err1 + i)) refresh_all = 1;
@@ -486,7 +499,7 @@ void LCD_Display(void)
 							if(n < 10) lcd.print(' ');
 						}
 					}
-				} else if(i == 0) {
+				} else if(debugmode && i == 0) {
 					lcd.setCursor(19, 0);
 					lcd.print(bitRead(LCD_SCR_last, LCD_SCR_last_pls) ? 'D' : ' ');
 				}
@@ -966,7 +979,7 @@ void setup()
 		DEBUGN(F("Copyright by Vadim Kulakov (c) 2025, vad7@yahoo.com"));
 	}
 #endif
-	if(digitalPinToPort(BUZZER_PD1) != digitalPinToPort(BUZZER_PD2) || digitalPinToPort(BUZZER_PD2) != digitalPinToPort(BUZZER_PD3)) {
+	if(digitalPinToPort(BUZZER_PD1) != digitalPinToPort(BUZZER_PD2) || digitalPinToPort(BUZZER_PD1) != digitalPinToPort(BUZZER_PD3)) {
 		while(1) {
 			wdt_reset();
 #ifdef DEBUG_TO_SERIAL
@@ -1090,6 +1103,11 @@ void loop()
 		d <<= 1;
 #endif
 		if(d != debugmode) {
+			if(*portOutputRegister(digitalPinToPort(BUZZER_PD1)) & digitalPinToBitMask(BUZZER_PD1)) {
+				*portOutputRegister(digitalPinToPort(BUZZER_PD1)) &= ~(digitalPinToBitMask(BUZZER_PD1)|digitalPinToBitMask(BUZZER_PD2)|digitalPinToBitMask(BUZZER_PD3));
+				beep_time = BEEP_DURATION;
+			} else beep_time = 0;
+			beep_cnt = 0;
 			beep_num = 255;	// short beep
 #ifdef LCD_ENABLED
 			LCD_SCR_last = 127; // refresh screen
