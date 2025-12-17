@@ -17,7 +17,7 @@ Connections (Arduino Nano):
 Two active balancers JK-DZ11B2A24S RS485 are supported.
 UART0 (TX,RX) - Debug, setup port
 UART1 (D11,D12) - BMS 1/2
-pin A1(D14) - Debug to UART0 (TX,RX) - connect pin to GND before power on (115200 bps), buzzer will be off
+pin A0(D14) - Debug to UART0 (TX,RX) - connect pin to GND before power on (115200 bps), buzzer will be off
 pin A1(D15) - Key1 (to GND)
 pin D8+D9+D10 -> resistor 0..50 Om -> Buzzer [+] (40 mA MAX), all pins must be on the same port!
 pin D2 - LCD_RS, D3 - LCD_E, D4..D7 - LCD_DB4..7 - LCD 2004 (20x4) 5V
@@ -44,10 +44,10 @@ Microart connector RJ-11 (6P6C):
 #include <avr/sleep.h>
 #include <avr/interrupt.h>
 #include <util/atomic.h>
-extern "C" {
-	#include "utility/twi.h"
-}
 #include <Wire.h>
+extern "C" {
+	#include <utility/twi.h>
+}
 
 //#define DEBUG_ALWAYS_ON				// DEBUG to UART0(USB) - ON
 //#define DEBUG_BMS_SEND
@@ -313,8 +313,8 @@ uint8_t  beep_num = 0;
 uint8_t  beep_cnt = 0;
 uint8_t  beep_time = 0;
 uint8_t  key1_status = 0;
-uint8_t  key1_delay = 0;		// 0.1s
-uint8_t  key1_PIN;
+uint8_t  key1_delay = 0;		// 1-2ms
+volatile uint8_t *key1_PIN;
 uint8_t  key1_MASK;
 uint8_t  RWARN_SendCode = 0;
 uint8_t  RWARN_Sending_Low = 0;
@@ -324,20 +324,15 @@ uint8_t  LCD_refresh_sec = 3;	// счетчик обновления LCD
 uint8_t  LCD_page = 0;
 #endif
 
-ISR(PCINT0_vect) {
-	uint8_t b = key1_PIN & key1_MASK;
-	if(b && !key1_status) {
-		key1_status = 1;
-		key1_delay = 2;
-	} else if(!b && key1_status) {
-		key1_status = 0;
-		key1_delay = 2;
-	}
-}
-
 ISR(PCINT1_vect, ISR_ALIASOF(PCINT0_vect));
 ISR(PCINT2_vect, ISR_ALIASOF(PCINT0_vect));
 ISR(PCINT3_vect, ISR_ALIASOF(PCINT0_vect));
+ISR(PCINT0_vect) {
+	if(!key1_delay) {
+		if(!(*key1_PIN & key1_MASK)) key1_status = 1; // pressed
+	}
+	key1_delay = 150;
+}
 
 // Called in delay()
 void yield(void)
@@ -961,9 +956,13 @@ void setup()
 	PRR0 = (1<<PRSPI0) | (1<<PRADC); // Power off: SPIs, ADC, PTC
 	PRR1 = (1<<PRPTC) | (1<<PRSPI1);
 	BMS_SERIAL.begin(BMS_SERIAL_RATE);
+
 	pinMode(KEY1, INPUT_PULLUP);
-	bitSet(key1_PIN = *digitalPinToPCMSK(KEY1), key1_MASK = digitalPinToPCMSKbit(KEY1));
-	bitSet(*digitalPinToPCICR(KEY1), digitalPinToPCICRbit(KEY1));
+	*digitalPinToPCMSK(KEY1) |= _BV(digitalPinToPCMSKbit(KEY1));
+	*digitalPinToPCICR(KEY1) |= _BV(digitalPinToPCICRbit(KEY1));
+	key1_PIN = portInputRegister(digitalPinToPort(KEY1));
+	key1_MASK = digitalPinToBitMask(KEY1);
+
 	pinMode(BUZZER_PD1, OUTPUT); pinMode(BUZZER_PD2, OUTPUT); pinMode(BUZZER_PD3, OUTPUT);
 	digitalWrite(OUT_CELL_UNDER_V, LOW);
 	pinMode(OUT_CELL_UNDER_V, INPUT_PULLUP);
@@ -985,7 +984,7 @@ void setup()
 	debugmode = 1;
   #else
 	wdt_reset();
-	delay(25);
+	delay(50);
 	debugmode = !(*portInputRegister(digitalPinToPort(DEBUG_ACTIVE_PD)) & digitalPinToBitMask(DEBUG_ACTIVE_PD));
   #endif
 	wdt_reset();
@@ -1095,7 +1094,7 @@ void setup()
 
 void loop()
 {
-	static uint32_t led_flashing, bms_reading, beeping;
+	static uint32_t led_flashing, bms_reading, cnt100ms;
 	wdt_reset();
 	uint8_t _err;
 	for(uint8_t i = 0; i < BMS_NUM_MAX; i++) {
@@ -1117,8 +1116,17 @@ void loop()
 		else *portOutputRegister(digitalPinToPort(LED_PD)) ^= digitalPinToBitMask(LED_PD);
 	}
 #endif
-	if(m - beeping >= 100UL) { // 0.1 sec
-		beeping = m;
+	if(!(*key1_PIN & key1_MASK)) { // pressed
+		key1_delay = 150;
+	} else if(key1_delay) key1_delay--;
+	if(m - cnt100ms >= 100UL) { // 0.1 sec
+		cnt100ms = m;
+		if(key1_status == 1) {
+			// to do...
+			if(debugmode) DEBUGN("Key pressed");
+			//
+			key1_status = 0;
+		}
 		uint8_t d  = !(*portInputRegister(digitalPinToPort(DEBUG_ACTIVE_PD)) & digitalPinToBitMask(DEBUG_ACTIVE_PD));
 #if defined(__AVR_ATmega328PB__)
 		d <<= 1;
