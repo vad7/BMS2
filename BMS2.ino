@@ -431,12 +431,12 @@ uint16_t LCD_SCR_MaxCellV[BMS_NUM_MAX];
 // Outs error text and fills remaining space in string with spaces
 void LCD_Display_Err(uint8_t _err, uint8_t space)
 {
-	const char *str;
+	const char *str PROGMEM;
 	if(_err == ERR_BMS_NotAnswer) str = sERR_BMS_NotAnswer;
 	else if(_err == ERR_BMS_Read) str = sERR_BMS_Read;
 	else if(_err == ERR_BMS_Resistance) str = sERR_BMS_Resistance;
 	else if(_err == ERR_BMS_Config) str = sERR_BMS_Config;
-	lcd.print(str);
+	lcd.print((const __FlashStringHelper *)str);
 	int8_t n = space - strlen(str);
 	while(n-- > 0) lcd.print(' ');
 }
@@ -1082,11 +1082,10 @@ void setup()
 	lcd.begin(20, 4); // Setup: cols, rows
 	lcd.print(F("BMS2 v"));
 	lcd.print(VERSION);
-	lcd.setCursor(0, 1);
 	lcd.print(F(", 12.2025"));
-	lcd.setCursor(0, 2);
+	lcd.setCursor(0, 1);
 	lcd.print(F("(C) Vadim Kulakov"));
-	lcd.setCursor(0, 3);
+	lcd.setCursor(0, 2);
 	lcd.print(F("vad7@yahoo.com"));
 #endif
 	FlashLED(3, 1, 1);
