@@ -24,7 +24,7 @@ pin D2 - LCD_RS, D3 - LCD_E, D4..D7 - LCD_DB4..7 - LCD 2004 (20x4) 5V
 pin SDA(A4), SCL(A5) - I2C MAP
 pin A2(D16) - Cell Undervoltage, Active LOW
 pin A3(D17) - Cell Overvoltage, Active LOW, A2+A3 - BMS Error
-pin D13 - Error code (pulses)
+pin D13 - slow sofware UART (default 333 Hz) (BMS errors, voltages, +CRC16(Modbus))
 pin D25(PE0) - LED
 
 Microart connector RJ-11 (6P6C):
@@ -37,7 +37,7 @@ Microart connector RJ-11 (6P6C):
 
 */
 
-#define VERSION F("2.1")
+#define VERSION F("2.2")
 
 #include "Arduino.h"
 #include <avr/wdt.h>
@@ -48,8 +48,9 @@ Microart connector RJ-11 (6P6C):
 extern "C" {
 	#include <utility/twi.h>
 }
+#include "crc16.h"
 
-//#define DEBUG_ALWAYS_ON				// DEBUG to UART0(USB) - ON
+#define DEBUG_ALWAYS_ON				// DEBUG to UART0(USB) - ON
 //#define DEBUG_BMS_SEND
 
 // PINS definition
@@ -69,11 +70,12 @@ LiquidCrystal lcd( 2,  3,  4,  5,  6,  7);	// LCD 20x4
 //
 #define OUT_CELL_UNDER_V			16	// A2, active LOW
 #define OUT_CELL_OVER_V				17	// A3, active LOW, OUT_CELL_UNDER_V+OUT_CELL_OVER_V = BMS ERROR
-#define OUT_PULSE_PIN				13
-#define OUT_PULSE_LEVEL				0	// pulses active level - 0/1
-#define OUT_PULSE_HIGH_LEN			25	// *0.1sec
-#define OUT_PULSE_LOW_LEN			25	// *0.1sec
-#define OUT_PULSE_END_LOW_LEN		40	// *0.1sec
+#define RWARN_PULSE_PIN				13
+#define RWARN_PULSE_LEVEL			0	// UART active level
+#define RWARN_PULSE_QT				3000// microsec, bit length
+#define RWARN_PULSE_HIGH_LEN		25	// *1msec
+#define RWARN_PULSE_LOW_LEN			25	// *1msec
+#define RWARN_PULSE_END_LOW_LEN		40	// *1msec
 
 #define I2C_FREQ					2500
 #define BMS_NUM_MAX					2		// max number of connected BMS
@@ -150,6 +152,7 @@ const char dbg_I2C_READ_BMS[] PROGMEM = "I2C_READ_BMS";
 const char dbg_temp[] PROGMEM = "temp";
 const char dbg_delta_change_pause[] PROGMEM = "dchgpause";
 const char dbg_read[] PROGMEM = "read";	// ALL BMS
+const char dbg_RWARN_period[] PROGMEM = "rwarn";
 #else
 #define DEBUG(s)
 #define DEBUGN(s)
@@ -201,6 +204,7 @@ struct WORK {
 	uint16_t BalansDeltaDefault;	// Default balans delta voltage, mV
 	uint16_t BalansDelta;			// mV
 	uint8_t  BalansDeltaI;			// Current threshold
+	uint8_t  RWARN_Send_Period;		// sec
 } work;
 
 struct _EEPROM {
@@ -224,9 +228,10 @@ struct _EEPROM EEMEM EEPROM = {
 		.cell_delta_max_V = 100,
 		.Vmaxhyst = 1,
 		.BalansDeltaPause = 17*60,
-		.BalansDeltaDefault = 5,
+		.BalansDeltaDefault = 0, //5,
 		.BalansDelta = 20,
-		.BalansDeltaI = 2
+		.BalansDeltaI = 2,
+		.RWARN_Send_Period = 20
 	}
 };
 
@@ -262,6 +267,22 @@ enum {
 	RWARN_Cell_DeltaMax = 6
 };
 
+struct RWARN_BMS {
+	uint8_t  last_status;	// bms_flags (b7=on/off, b6=balancing) + last_error
+	uint8_t  bms_min_string;
+	uint8_t  bms_max_string;
+	uint16_t bms_min_cell_mV;
+	uint16_t bms_max_cell_mV;
+	int32_t  bms_total_mV;
+} __attribute__ ((packed));
+uint8_t rwarn_buf[1 + BMS_NUM_MAX * sizeof(RWARN_BMS) + 2]; // bms_num + RWARN_BMS + crc16
+uint8_t  RWARN_period;	// sec
+uint8_t  RWARN_idx = 0;
+uint8_t  RWARN_send_len;
+uint8_t  RWARN_bit = 0;
+uint8_t  RWARN_byte;
+uint32_t RWARN_quantum = 0;
+
 uint8_t  flags = (1<<f_BMS_Need_Read);	// f_*
 int8_t   debug = 0;					// 0 - off, 1 - on, 2 - detailed dump, 3 - full dump, 4 - BMS full
 uint8_t  debugmode = 0;				// 0 - off, 1 - debug to TX
@@ -274,10 +295,10 @@ uint8_t  bms_idx_prev = 0;
 uint32_t bms_loop_time;
 uint8_t  bms_flags[BMS_NUM_MAX];	// b0 - on/off, b1 - balance current > 0
 uint16_t bms_min_cell_mV[BMS_NUM_MAX];	// *1mV
-uint16_t bms_min_string[BMS_NUM_MAX];
+uint8_t  bms_min_string[BMS_NUM_MAX];
 uint16_t bms_max_cell_mV[BMS_NUM_MAX];	// *1mV
-uint16_t bms_max_string[BMS_NUM_MAX];
-int32_t  bms_totalV[BMS_NUM_MAX];	// *1mV
+uint8_t  bms_max_string[BMS_NUM_MAX];
+int32_t  bms_total_mV[BMS_NUM_MAX];		// *1mV
 uint32_t sec_timer = 0;
 uint8_t  watchdog_I2C = 0;
 uint8_t  watchdog_BMS = 0;
@@ -316,9 +337,6 @@ uint8_t  key1_status = 0;
 uint8_t  key1_delay = 0;		// 1-2ms
 volatile uint8_t *key1_PIN;
 uint8_t  key1_MASK;
-uint8_t  RWARN_SendCode = 0;
-uint8_t  RWARN_Sending_Low = 0;
-uint8_t  RWARN_Sending_Cnt = 0;
 #ifdef LCD_ENABLED
 uint8_t  LCD_refresh_sec = 3;	// счетчик обновления LCD
 uint8_t  LCD_page = 0;
@@ -337,7 +355,7 @@ ISR(PCINT0_vect) {
 // Called in delay()
 void yield(void)
 {
-	sleep_cpu();
+//	sleep_cpu();
 }
 
 void Delay100ms(uint8_t ms) {
@@ -359,25 +377,8 @@ void Set_New_Error(uint8_t _err)
 {
 	if(_err) {
 		last_error[read_bms_num] = _err;
-		if(RWARN_SendCode == 0) {
-			for(uint8_t i = 0; i < BMS_NUM_MAX; i++) {
-				uint8_t d;
-				if((d = last_error[i])) {
-					if(d == ERR_BMS_NotAnswer) d = RWARN_BMS_NotAnswer;
-					else if(d == ERR_BMS_Read) d = RWARN_BMS_Error;
-					else if(d == ERR_BMS_Config) d = RWARN_BMS_Error;
-					else if(d == ERR_BMS_Resistance) d = RWARN_BMS_Error;
-					else if(d == ERR_BMS_Cell_Low) d = RWARN_Cell_Low;
-					else if(d == ERR_BMS_Cell_High) d = RWARN_Cell_High;
-					else if(d == ERR_BMS_Cell_DeltaMax) d = RWARN_Cell_DeltaMax;
-					RWARN_SendCode = d;
-					if(debug) {	DEBUG(F("New Warn: "));	DEBUGN(d); }
-					break;
-				}
-			}
-		}
+		BLINK_ALARM;
 	}
-	if(RWARN_SendCode == 0) RWARN_SendCode = RWARN_OK; else BLINK_ALARM
 }
 
 void i2c_set_slave_addr(uint8_t addr)
@@ -415,6 +416,46 @@ void I2C_Receive(int howMany) {
 	while(Wire.available()) {
 		i2c_receive[i2c_receive_idx++] = Wire.read();
 		if(i2c_receive_idx >= sizeof(i2c_receive)) break;
+	}
+}
+
+void RWARN_check_send(void)
+{
+	uint32_t m = micros();
+	if(RWARN_period == 0 && m - RWARN_quantum >= RWARN_PULSE_QT) {
+		RWARN_quantum = m;
+		if(RWARN_bit == 0) { // start pulse
+			digitalWrite(RWARN_PULSE_PIN, RWARN_PULSE_LEVEL);
+			if(RWARN_idx == 0){ // begin
+				rwarn_buf[0] = work.bms_num + 0x80;
+				RWARN_BMS *ptr = (RWARN_BMS *) &rwarn_buf[1];
+				for(uint8_t i = 0; i < work.bms_num; i++) {
+					ptr->last_status = (bms_flags[i]<<6) | last_error[i];
+					ptr->bms_min_string = bms_min_string[i];
+					ptr->bms_max_string = bms_max_string[i];
+					ptr->bms_min_cell_mV = bms_min_cell_mV[i];
+					ptr->bms_max_cell_mV = bms_max_cell_mV[i];
+					ptr->bms_total_mV = bms_total_mV[i];
+					ptr++;
+				}
+				*(uint16_t *)ptr = calc_crc16(rwarn_buf, RWARN_send_len = (uint8_t *)ptr - rwarn_buf, 0xFFFF);
+				RWARN_send_len += 2; // +CRC16
+			}
+			RWARN_byte = rwarn_buf[RWARN_idx];
+			//DEBUG(F("RW: ")); DEBUGN(RWARN_byte);
+			RWARN_bit = 1;
+		} else if(RWARN_bit == 9) { // stop pulse
+			digitalWrite(RWARN_PULSE_PIN, !RWARN_PULSE_LEVEL);
+			if(++RWARN_idx >= RWARN_send_len){
+				RWARN_period = work.RWARN_Send_Period;
+				RWARN_idx = 0;
+			}
+			RWARN_bit = 0;
+		} else {
+			digitalWrite(RWARN_PULSE_PIN, RWARN_byte & 1 ? !RWARN_PULSE_LEVEL : RWARN_PULSE_LEVEL);
+			RWARN_byte >>= 1;
+			RWARN_bit++;
+		}
 	}
 }
 
@@ -489,9 +530,9 @@ void LCD_Display(void)
 					lcd.print(F("ON"));
 					lcd.print(bitRead(bms_flags[i], 0) ? '*' : ' ');
 				} else lcd.print(F("OFF"));
-				if(LCD_SCR_TotalV[i] != bms_totalV[i] || refresh_all) {
+				if(LCD_SCR_TotalV[i] != bms_total_mV[i] || refresh_all) {
 					lcd.print(' ');
-					LCD_print_num_d3(LCD_SCR_TotalV[i] = bms_totalV[i]);
+					LCD_print_num_d3(LCD_SCR_TotalV[i] = bms_total_mV[i]);
 					lcd.print(F("V"));
 				}
 				if(sub_min != 0 || sub_max != 0 || refresh_all) {
@@ -639,6 +680,10 @@ void DebugSerial_read(void)
 			} else if(strncmp_P(debug_read_buffer, dbg_read, sizeof(dbg_read)-1) == 0) {
 				bitSet(flags, f_BMS_Need_Read);
 				DEBUG(d);
+			} else if(strncmp_P(debug_read_buffer, dbg_RWARN_period, sizeof(dbg_RWARN_period)-1) == 0) {
+				work.RWARN_Send_Period = d;
+				DEBUG(d);
+				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
 			} else if(debug_read_buffer[1] >= '0' && debug_read_buffer[1] <= '3' && (!debug_read_buffer[2] || !debug_read_buffer[3])) {
 				if((debug_read_buffer[0] | 0x20) == 'v') { // Vn=x, n={1..bms_cells_qty}, n=0 - all
 					if(d) {
@@ -797,7 +842,7 @@ void BMS_Serial_read(void)
 				}
 				int16_t _max = 0;
 				int16_t _min = 32767;
-				bms_totalV[read_bms_num] = 0;
+				bms_total_mV[read_bms_num] = 0;
 				uint16_t *p = &bms[read_bms_num][0];
 				for(uint8_t i = 0; i < read_buffer[8]; i++,p++) {
 					if(i > work.bms_cells_qty - 1) {
@@ -805,7 +850,7 @@ void BMS_Serial_read(void)
 						continue;
 					}
 					int16_t v = read_buffer[BMS_OFFSET_CellsV_Array + i*2]*256 + read_buffer[BMS_OFFSET_CellsV_Array+1 + i*2];
-					bms_totalV[read_bms_num] += v;
+					bms_total_mV[read_bms_num] += v;
 					if(work.V_correct) {
 						v += work.V_correct;
 						if(v < 0) v = 0;
@@ -968,8 +1013,8 @@ void setup()
 	pinMode(OUT_CELL_UNDER_V, INPUT_PULLUP);
 	digitalWrite(OUT_CELL_OVER_V, LOW);
 	pinMode(OUT_CELL_OVER_V, INPUT_PULLUP);
-	pinMode(OUT_PULSE_PIN, OUTPUT);
-	digitalWrite(OUT_PULSE_PIN, !OUT_PULSE_LEVEL);
+	pinMode(RWARN_PULSE_PIN, OUTPUT);
+	digitalWrite(RWARN_PULSE_PIN, !RWARN_PULSE_LEVEL);
 	pinMode(LED_PD, OUTPUT);
 	digitalWrite(LED_PD, LOW);
 #ifdef LCD_Backlite_pin
@@ -1024,6 +1069,7 @@ void setup()
 	memset(bms_max_string, 0, sizeof(bms_max_string));
 	memset(bms_flags, 0, sizeof(bms_flags));
 	memset(last_error, 0, sizeof(last_error));
+	RWARN_period = work.RWARN_Send_Period;
 	Wire.begin();
 	// deactivate internal pullups for twi.
 	digitalWrite(SDA, 0);
@@ -1052,6 +1098,7 @@ void setup()
 		DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_period); DEBUGN(F("=0-off,1-synch,X ms)"));
 		DEBUG(F("Wait answer from BMS, ms: ")); DEBUG(work.BMS_wait_answer_time); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_wait_answer); DEBUGN(F("=X)"));
 		DEBUG(F("BMS rotate period: ")); DEBUG(work.I2C_bms_rotate_period); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_rotate); DEBUGN(F("=X)"));
+		DEBUG(F("Remote warning period [D")); DEBUG(RWARN_PULSE_PIN); DEBUG(F("]: ")); DEBUG(work.RWARN_Send_Period); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_RWARN_period); DEBUGN(F("=X)"));
 		//DEBUG(F("Options(bits: median,average): ")); if(bitRead(work.options, o_average)) DEBUG(F("average ")); if(bitRead(work.options, o_median)) DEBUG(F("median ")); DEBUG("\n");
 		DEBUG(F("BMS cell min, mV: ")); DEBUG(work.cell_min_V); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cell_min_V); DEBUGN(F("=NNNN)"));
 		DEBUG(F("BMS cell max, mV: ")); DEBUG(work.cell_max_V); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cell_max_V); DEBUGN(F("=NNNN)"));
@@ -1096,6 +1143,7 @@ void loop()
 {
 	static uint32_t led_flashing, bms_reading, cnt100ms;
 	wdt_reset();
+	RWARN_check_send();
 	uint8_t _err;
 	for(uint8_t i = 0; i < BMS_NUM_MAX; i++) {
 		if((_err = last_error[i])) break;
@@ -1170,24 +1218,6 @@ void loop()
 				}
 			}
 		}
-		if(RWARN_SendCode) {
-			if(RWARN_Sending_Cnt == 0) { // new
-				goto xRWARN_PULSE;
-			} else if(--RWARN_Sending_Cnt == 0) { // next pulse
-				if(RWARN_Sending_Low) {
-					digitalWrite(OUT_PULSE_PIN, !OUT_PULSE_LEVEL);
-//					DEBUG(F("W:0\n"));
-					RWARN_Sending_Cnt = RWARN_Sending_Low;
-					RWARN_Sending_Low = 0;
-				} else if(--RWARN_SendCode) {
-xRWARN_PULSE:
-					digitalWrite(OUT_PULSE_PIN, OUT_PULSE_LEVEL);
-//					DEBUG(RWARN_SendCode == 1 ? F("W:1E\n") : F("W:1\n"));
-					RWARN_Sending_Cnt = OUT_PULSE_HIGH_LEN;
-					RWARN_Sending_Low = RWARN_SendCode == 1 ? OUT_PULSE_END_LOW_LEN : OUT_PULSE_LOW_LEN;
-				}
-			}
-		}
 	}
 	if(m - sec_timer >= 1000UL) { // every 1 sec
 		sec_timer = m;
@@ -1204,13 +1234,24 @@ xRWARN_PULSE:
 			}
 		}
 		if(delta_change_pause < 0xFFFF) delta_change_pause++;
+		if(RWARN_period) RWARN_period--;
 #ifdef DEBUG_TO_SERIAL
 		DebugSerial_read();
 #endif
 #ifdef LCD_ENABLED
 		if(LCD_refresh_sec) LCD_refresh_sec--;
-		if(LCD_refresh_sec == 0) {
+		if(LCD_refresh_sec == 0 && RWARN_bit == 0 && RWARN_idx == 0) {
+
+
+			uint32_t m = millis();
+
 			LCD_Display();
+
+			uint32_t m2 = millis();
+
+			DEBUG(F("D#")); DEBUGN(m2 - m);
+
+
 			LCD_refresh_sec = 1;
 		}
 #endif
@@ -1361,5 +1402,5 @@ xRWARN_PULSE:
 		}
 		if(debugmode) DEBUGIF(4,F("\n"));
 	}
-	delay(MAIN_LOOP_PERIOD); // not less than, actually +848us
+	//delay(MAIN_LOOP_PERIOD); // not less than, actually +8..16us
 }
