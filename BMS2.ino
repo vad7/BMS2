@@ -66,6 +66,7 @@ extern "C" {
 // LCD ---------- rs, en, d4, d5, d6, d7
 LiquidCrystal lcd( 2,  3,  4,  5,  6,  7);	// LCD 20x4
 //#define LCD_Backlite_pin	13
+#define LCD_REFRESH_PERIOD			2	// sec
 #endif
 //
 #define OUT_CELL_UNDER_V			16	// A2, active LOW
@@ -337,10 +338,6 @@ uint8_t  key1_status = 0;
 uint8_t  key1_delay = 0;		// 1-2ms
 volatile uint8_t *key1_PIN;
 uint8_t  key1_MASK;
-#ifdef LCD_ENABLED
-uint8_t  LCD_refresh_sec = 3;	// счетчик обновления LCD
-uint8_t  LCD_page = 0;
-#endif
 
 ISR(PCINT1_vect, ISR_ALIASOF(PCINT0_vect));
 ISR(PCINT2_vect, ISR_ALIASOF(PCINT0_vect));
@@ -463,11 +460,15 @@ void RWARN_check_send(void)
 #define LCD_SCR_last_page 	0
 #define LCD_SCR_last_err1	1
 #define LCD_SCR_last_err2	2
-#define LCD_SCR_last_pls	7
-uint8_t LCD_SCR_last = 127;
+#define LCD_SCR_last_what	6	// what to display
+#define LCD_SCR_last_pulse	7
+#define LCD_SCR_REFRESH_NOW 0b00111111
+uint8_t LCD_SCR_last = LCD_SCR_REFRESH_NOW;
 int32_t LCD_SCR_TotalV[BMS_NUM_MAX];
 uint16_t LCD_SCR_MinCellV[BMS_NUM_MAX];
 uint16_t LCD_SCR_MaxCellV[BMS_NUM_MAX];
+uint8_t  LCD_refresh_sec = 3;	// счетчик обновления LCD
+uint8_t  LCD_page = 0;
 
 // Outs error text and fills remaining space in string with spaces
 void LCD_Display_Err(uint8_t _err, uint8_t space)
@@ -495,6 +496,7 @@ void LCD_print_num_d3(int32_t num)
 
 void LCD_Display(void)
 {
+	if(LCD_refresh_sec) return;
 	uint8_t refresh_all = 0;
 	if(LCD_page == 0) {
 //  01234567890123456789
@@ -503,22 +505,26 @@ void LCD_Display(void)
 //  B2: OFF 53.342V ·12
 //   3.223(12) 3.234(16)
 		if(bitRead(LCD_SCR_last, LCD_SCR_last_page)) {
+			bitClear(LCD_SCR_last, LCD_SCR_last_page);
 			lcd.clear();
+			bitClear(LCD_SCR_last, LCD_SCR_last_what);
 			refresh_all = 1;
 		}
-		bitClear(LCD_SCR_last, LCD_SCR_last_page);
-		for(uint8_t i = 0; i < 2; i++) {
+		uint8_t i = bitRead(LCD_SCR_last, LCD_SCR_last_what);
+		bitToggle(LCD_SCR_last, LCD_SCR_last_what);
+		if(!(LCD_SCR_last & _BV(LCD_SCR_last_what))) LCD_refresh_sec = LCD_REFRESH_PERIOD;
+		{
 			if(refresh_all) {
 				lcd.setCursor(0, i*2);
 				lcd.print('B');
 			} else lcd.setCursor(1, i*2);
-			lcd.print(bitRead(LCD_SCR_last, LCD_SCR_last_pls) ? ':' : '.');
+			lcd.print(bitRead(LCD_SCR_last, LCD_SCR_last_pulse) ? ':' : '.');
 			lcd.print(' ');
 			uint16_t sub_min = LCD_SCR_MinCellV[i] - bms_min_cell_mV[i];
 			uint16_t sub_max = LCD_SCR_MaxCellV[i] - bms_max_cell_mV[i];
 			if(last_error[i]) {
 				LCD_Display_Err(last_error[i], 16);
-				if(debugmode && i == 0 && bitRead(LCD_SCR_last, LCD_SCR_last_pls)) {
+				if(debugmode && i == 0 && bitRead(LCD_SCR_last, LCD_SCR_last_pulse)) {
 					lcd.setCursor(19, 0);
 					lcd.print('D');
 				}
@@ -546,7 +552,7 @@ void LCD_Display(void)
 							if(n < 100) lcd.print(' ');
 							if(n < 10) lcd.print(' ');
 						}
-						if(bitRead(LCD_SCR_last, LCD_SCR_last_pls)) lcd.print('D');
+						if(bitRead(LCD_SCR_last, LCD_SCR_last_pulse)) lcd.print('D');
 					} else {
 						lcd.setCursor(n > 999 ? 15 : 16, i*2 + 1);
 						lcd.print(0xA5); // '·'
@@ -558,7 +564,7 @@ void LCD_Display(void)
 					}
 				} else if(debugmode && i == 0) {
 					lcd.setCursor(19, 0);
-					lcd.print(bitRead(LCD_SCR_last, LCD_SCR_last_pls) ? 'D' : ' ');
+					lcd.print(bitRead(LCD_SCR_last, LCD_SCR_last_pulse) ? 'D' : ' ');
 				}
 			}
 			if(sub_min != 0 || refresh_all) {
@@ -576,7 +582,7 @@ void LCD_Display(void)
 				lcd.print(F(") "));
 			}
 		}
-		bitToggle(LCD_SCR_last, LCD_SCR_last_pls);
+		bitToggle(LCD_SCR_last, LCD_SCR_last_pulse);
 	} else if(LCD_page == 1) {
 		LCD_page = 0;
 		if(!bitRead(LCD_SCR_last, LCD_SCR_last_page)) {
@@ -1186,7 +1192,8 @@ void loop()
 			beep_cnt = 0;
 			beep_num = 255;	// short beep
 #ifdef LCD_ENABLED
-			LCD_SCR_last = 127; // refresh screen
+			LCD_SCR_last = LCD_SCR_REFRESH_NOW; // refresh screen
+			LCD_refresh_sec = 0;
 #endif
 		}
 		debugmode = d;
@@ -1239,20 +1246,6 @@ void loop()
 #endif
 #ifdef LCD_ENABLED
 		if(LCD_refresh_sec) LCD_refresh_sec--;
-		if(LCD_refresh_sec == 0 && RWARN_bit == 0 && RWARN_idx == 0) {
-
-
-			uint32_t m = millis();
-
-			LCD_Display();
-
-			uint32_t m2 = millis();
-
-			DEBUG(F("D#")); DEBUGN(m2 - m);
-
-
-			LCD_refresh_sec = 1;
-		}
 #endif
 	}
 
@@ -1401,5 +1394,10 @@ void loop()
 		}
 		if(debugmode) DEBUGIF(4,F("\n"));
 	}
+#ifdef LCD_ENABLED
+	if(RWARN_bit == 0) {
+		LCD_Display();
+	}
+#endif
 	//delay(MAIN_LOOP_PERIOD); // not less than, actually +8..16us
 }
