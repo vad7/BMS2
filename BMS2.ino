@@ -463,11 +463,12 @@ void RWARN_check_send(void)
 #define LCD_SCR_last_what	6	// what to display
 #define LCD_SCR_last_pulse	7
 #define LCD_SCR_REFRESH_NOW 0b00111111
-uint8_t LCD_SCR_last = LCD_SCR_REFRESH_NOW;
-int32_t LCD_SCR_TotalV[BMS_NUM_MAX];
+uint8_t  LCD_SCR_last = LCD_SCR_REFRESH_NOW;
+int32_t  LCD_SCR_TotalV[BMS_NUM_MAX];
 uint16_t LCD_SCR_MinCellV[BMS_NUM_MAX];
 uint16_t LCD_SCR_MaxCellV[BMS_NUM_MAX];
 uint8_t  LCD_refresh_sec = 3;	// счетчик обновления LCD
+uint8_t  refresh_all = 0;
 uint8_t  LCD_page = 0;
 
 // Outs error text and fills remaining space in string with spaces
@@ -479,7 +480,7 @@ void LCD_Display_Err(uint8_t _err, uint8_t space)
 	else if(_err == ERR_BMS_Resistance) str = sERR_BMS_Resistance;
 	else if(_err == ERR_BMS_Config) str = sERR_BMS_Config;
 	lcd.print((const __FlashStringHelper *)str);
-	int8_t n = space - strlen(str);
+	int8_t n = space - strlen_P(str);
 	while(n-- > 0) lcd.print(' ');
 }
 
@@ -497,7 +498,6 @@ void LCD_print_num_d3(int32_t num)
 void LCD_Display(void)
 {
 	if(LCD_refresh_sec) return;
-	uint8_t refresh_all = 0;
 	if(LCD_page == 0) {
 //  01234567890123456789
 //  B1: ON* 53.421V ·5
@@ -582,7 +582,7 @@ void LCD_Display(void)
 				lcd.print(F(") "));
 			}
 		}
-		bitToggle(LCD_SCR_last, LCD_SCR_last_pulse);
+		if(i) bitToggle(LCD_SCR_last, LCD_SCR_last_pulse);
 	} else if(LCD_page == 1) {
 		LCD_page = 0;
 		if(!bitRead(LCD_SCR_last, LCD_SCR_last_page)) {
