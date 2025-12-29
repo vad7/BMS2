@@ -50,7 +50,7 @@ extern "C" {
 }
 #include "crc16.h"
 
-#define DEBUG_ALWAYS_ON				// DEBUG to UART0(USB) - ON
+//#define DEBUG_ALWAYS_ON				// DEBUG to UART0(USB) - ON
 //#define DEBUG_BMS_SEND
 
 // PINS definition
