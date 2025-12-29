@@ -269,7 +269,7 @@ enum {
 };
 
 struct RWARN_BMS {
-	uint8_t  last_status;	// bms_flags (b7=on/off, b6=balancing) + last_error
+	uint8_t  last_status;	// bms_flags (b7=on/off, b6=balancing) + last_error ERR_BMS_*
 	uint8_t  bms_min_string;
 	uint8_t  bms_max_string;
 	uint16_t bms_min_cell_mV;
@@ -424,7 +424,7 @@ void RWARN_check_send(void)
 		if(RWARN_bit == 0) { // start pulse
 			digitalWrite(RWARN_PULSE_PIN, RWARN_PULSE_LEVEL);
 			if(RWARN_idx == 0){ // begin
-				rwarn_buf[0] = work.bms_num + 0x80;
+				rwarn_buf[0] = work.bms_num;
 				RWARN_BMS *ptr = (RWARN_BMS *) &rwarn_buf[1];
 				for(uint8_t i = 0; i < work.bms_num; i++) {
 					ptr->last_status = (bms_flags[i]<<6) | last_error[i];
@@ -472,7 +472,7 @@ uint8_t  refresh_all = 0;
 uint8_t  LCD_page = 0;
 
 // Outs error text and fills remaining space in string with spaces
-void LCD_Display_Err(uint8_t _err, uint8_t space)
+void LCD_Display_Err(uint8_t _err, int8_t space)
 {
 	const char *str PROGMEM;
 	if(_err == ERR_BMS_NotAnswer) str = sERR_BMS_NotAnswer;
@@ -517,7 +517,8 @@ void LCD_Display(void)
 			if(refresh_all) {
 				lcd.setCursor(0, i*2);
 				lcd.print('B');
-			} else lcd.setCursor(1, i*2);
+				lcd.print(i + 1);
+			} else lcd.setCursor(2, i*2);
 			lcd.print(bitRead(LCD_SCR_last, LCD_SCR_last_pulse) ? ':' : '.');
 			lcd.print(' ');
 			uint16_t sub_min = LCD_SCR_MinCellV[i] - bms_min_cell_mV[i];
