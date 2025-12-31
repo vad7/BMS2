@@ -8,7 +8,6 @@ Several BMS gate to Microart inverter
 В данном репозитории представлен I2C гейт для нескольких балансиров RS485 - Микроарт. Активные балансир JK-DZ11-B2A24S RS485.<br>
 Количество BMS - #define BMS_NUM_MAX<br>
 <br>
-<br>
 Выходной программный UART со скоростью 333 бод, для оповещения об ошибках и состоянии BMS другому контроллеру, например, к контроллеру ТН - https://github.com/vad7/Control<br>
 Формат данных:<br>
 uint8_t  BMS_num;<br>
