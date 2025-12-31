@@ -12,7 +12,7 @@ Several BMS gate to Microart inverter
 Формат данных:<br>
 uint8_t  BMS_num;<br>
 --- структура по каждому BMS<br>
-uint8_t  last_status;	// bms_flags (b7=on/off, b6=balancing) + last_error ERR_BMS_*<br>
+uint8_t  last_status;	// bms_flags (b7=on/off, b6=balancing) + last_error ERR_BMS_...<br>
 uint8_t  bms_min_string;<br>
 uint8_t  bms_max_string;<br>
 uint16_t bms_min_cell_mV;<br>
@@ -21,7 +21,6 @@ int32_t  bms_total_mV;<br>
 ---<br>
 CRC16 (Modbus)<br>
 <br>
-ERR_BMS_*:<br>
 ERR_BMS_Ok = 0,<br>
 ERR_BMS_NotAnswer = 1,<br>
 ERR_BMS_Read = 2,<br>
