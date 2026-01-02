@@ -73,7 +73,7 @@ LiquidCrystal lcd( 2,  3,  4,  5,  6,  7);	// LCD 20x4
 #define OUT_CELL_UNDER_V			16	// A2, active LOW
 #define OUT_CELL_OVER_V				17	// A3, active LOW, OUT_CELL_UNDER_V+OUT_CELL_OVER_V = BMS ERROR
 #define RWARN_PULSE_PIN				13
-#define RWARN_PULSE_LEVEL			0	// UART active level
+#define RWARN_PULSE_LEVEL			1	// UART active level
 #define RWARN_PULSE_QT				3000// microsec, bit length
 #define RWARN_PULSE_HIGH_LEN		25	// *1msec
 #define RWARN_PULSE_LOW_LEN			25	// *1msec
