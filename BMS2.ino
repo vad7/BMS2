@@ -497,6 +497,7 @@ void LCD_Display(void)
 			memset(LCD_SCR_TotalV, 0, sizeof(LCD_SCR_TotalV));
 			memset(LCD_SCR_MinCellV, 0, sizeof(LCD_SCR_MinCellV));
 			memset(LCD_SCR_MaxCellV, 0, sizeof(LCD_SCR_MaxCellV));
+			if(bitRead(flags, f_BMS_Ready)) lcd.clear();
 		}
 		uint8_t i = bitRead(LCD_SCR_last, LCD_SCR_last_what);
 		bitToggle(LCD_SCR_last, LCD_SCR_last_what);
@@ -516,7 +517,7 @@ void LCD_Display(void)
 			}
 			LCD_SCR_TotalV[i] = 0;
 		} else {
-			if(bms_total_mV[i]) {
+			if(bitRead(flags, f_BMS_Ready)) {
 				if(bitRead(bms_flags[i], 0)) {
 					lcd.print(F("ON"));
 					lcd.print(bitRead(bms_flags[i], 0) ? '*' : ' ');
