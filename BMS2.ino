@@ -14,9 +14,9 @@
 For ATMega328PB
 
 Connections (Arduino Nano):
-Two active balancers JK-DZ11B2A24S RS485 are supported.
+Active balancers JK-DZ11B2A24S RS485 are supported.
 UART0 (TX,RX) - Debug, setup port
-UART1 (D11,D12) - BMS 1/2
+UART1 (D11,D12) - BMS, MODBUS ID: 1, 2, 3, ..., BMS_NUM_MAX
 pin A0(D14) - Debug to UART0 (TX,RX) - connect pin to GND before power on (115200 bps), buzzer will be off
 pin A1(D15) - Key1 (to GND)
 pin D8+D9+D10 -> resistor 0..50 Om -> Buzzer [+] (40 mA MAX), all pins must be on the same port!
@@ -67,6 +67,7 @@ extern "C" {
 LiquidCrystal lcd( 2,  3,  4,  5,  6,  7);	// LCD 20x4
 //#define LCD_Backlite_pin	13
 #define LCD_REFRESH_PERIOD			2	// sec
+#define LCD_ERR_DISPLAY_TIME		3	// sec
 #endif
 //
 #define OUT_CELL_UNDER_V			16	// A2, active LOW
@@ -81,10 +82,10 @@ LiquidCrystal lcd( 2,  3,  4,  5,  6,  7);	// LCD 20x4
 #define I2C_FREQ					2500
 #define BMS_NUM_MAX					2		// max number of connected BMS
 #define BMS_CELLS_QTY_MAX			24
+#define WATCHDOG_NO_CONN			30UL	// sec
 #define MAIN_LOOP_PERIOD			1		// msec, not less than this, actually +848 us
 #define BMS_NO_TEMP					255
-#define WATCHDOG_NO_CONN			30UL	// sec
-#define BMS_MIN_PAUSE_BETWEEN_READS	20UL	// msec, defaults
+#define BMS_MIN_PAUSE_BETWEEN_READS	150UL	// msec, defaults
 #define BMS_CHANGE_DELTA_PAUSE_MIN  1800	// sec
 #define BMS_CHANGE_DELTA_EQUALIZER  60		// attempts (* ~1 sec)
 #define BMS_CHANGE_DELTA_DISCHARGE  30		// sec, When I2C_MAP_MODE = M_ON balance delta => BalansDelta[max]
@@ -218,11 +219,11 @@ struct _EEPROM EEMEM EEPROM = {
 		.bms_cells_qty = 16,
 		.options = (1<<o_equalize_cells_V),
 		.BMS_read_period = 5000,
-		.BMS_wait_answer_time = BMS_MIN_PAUSE_BETWEEN_READS,
+		.BMS_wait_answer_time = 1000,
 		.I2C_bms_rotate_period = 5,
 		.round = round_true,
 		.V_correct = 0,
-		.temp_correct = 0,
+		.temp_correct = 6,
 		.watchdog = 0,
 		.cell_min_V = 2900,
 		.cell_max_V = 3500,
@@ -232,7 +233,7 @@ struct _EEPROM EEMEM EEPROM = {
 		.BalansDeltaDefault = 0, //5,
 		.BalansDelta = 20,
 		.BalansDeltaI = 2,
-		.RWARN_Send_Period = 20
+		.RWARN_Send_Period = 10
 	}
 };
 
@@ -246,26 +247,11 @@ enum { // last_error[n] =
 	ERR_BMS_Cell_High = 6,
 	ERR_BMS_Cell_DeltaMax = 7
 };
-enum { // alarm =
-	ALARM_BMS_Cell_Low = 1,
-	ALARM_BMS_Cell_High = 2,
-	ALARM_BMS_Cell_DeltaMax = 3
-};
 enum {
 	f_BMS_Ready = 0,
 	f_BMS_Need_Read = 1,
 	f_BMS_Wait_Answer = 2,
-	f_BMS_ReadOk = 3
-};
-
-enum {
-//	RWARN_NONE = 0,
-	RWARN_OK = 1,
-	RWARN_BMS_NotAnswer = 2,
-	RWARN_BMS_Error = 3,
-	RWARN_Cell_Low = 4,
-	RWARN_Cell_High = 5,
-	RWARN_Cell_DeltaMax = 6
+	f_BMS_Read_Finish = 3
 };
 
 struct RWARN_BMS {
@@ -286,7 +272,7 @@ uint32_t RWARN_quantum = 0;
 
 uint8_t  flags = (1<<f_BMS_Need_Read);	// f_*
 int8_t   debug = 0;					// 0 - off, 1 - on, 2 - detailed dump, 3 - full dump, 4 - BMS full
-uint8_t  debugmode = 0;				// 0 - off, 1 - debug to TX
+uint8_t  debugmode = 0;				// 0 - off, 1,2 - debug to TX, 1 - the same serial as BMS - dont read/write to BMS
 uint16_t bms[BMS_NUM_MAX][BMS_CELLS_QTY_MAX];	// *10mV
 uint16_t bms_avg[BMS_NUM_MAX][BMS_CELLS_QTY_MAX];
 uint8_t  bms_select = 0;
@@ -314,12 +300,14 @@ uint8_t  map_mode = M_NOT_READ;
 uint8_t  temp = BMS_NO_TEMP;		// C, +50
 uint8_t  crc;
 uint8_t  last_error[BMS_NUM_MAX];
-uint8_t  alarm[BMS_NUM_MAX];
+uint8_t  LCD_last_error[BMS_NUM_MAX];
+uint8_t  LCD_last_error_timeout[BMS_NUM_MAX];
 uint8_t  error_alarm_time = 0;
 uint8_t  error_new = 0;
 uint8_t  error_send = 0;
 uint8_t  read_buffer[74];
 int8_t   read_idx = 0;
+uint32_t bms_reading = 0;
 uint8_t  i2c_receive[32];
 uint8_t  i2c_receive_idx = 0;
 uint32_t bms_last_read_time = 0;
@@ -372,8 +360,10 @@ void FlashLED(uint8_t num, uint8_t ton, uint8_t toff) {
 
 void Set_New_Error(uint8_t _err)
 {
+	last_error[read_bms_num] = _err;
 	if(_err) {
-		last_error[read_bms_num] = _err;
+		LCD_last_error[read_bms_num] = _err;
+		LCD_last_error_timeout[read_bms_num] = LCD_ERR_DISPLAY_TIME;
 		BLINK_ALARM;
 	}
 }
@@ -458,8 +448,6 @@ void RWARN_check_send(void)
 
 #ifdef LCD_ENABLED
 #define LCD_SCR_last_page 	0
-#define LCD_SCR_last_err1	1
-#define LCD_SCR_last_err2	2
 #define LCD_SCR_last_what	6	// what to display
 #define LCD_SCR_last_pulse	7
 #define LCD_SCR_REFRESH_NOW 0b00111111
@@ -468,7 +456,6 @@ int32_t  LCD_SCR_TotalV[BMS_NUM_MAX];
 uint16_t LCD_SCR_MinCellV[BMS_NUM_MAX];
 uint16_t LCD_SCR_MaxCellV[BMS_NUM_MAX];
 uint8_t  LCD_refresh_sec = 3;	// счетчик обновления LCD
-uint8_t  refresh_all = 0;
 uint8_t  LCD_page = 0;
 
 // Outs error text and fills remaining space in string with spaces
@@ -506,47 +493,44 @@ void LCD_Display(void)
 //   3.223(12) 3.234(16)
 		if(bitRead(LCD_SCR_last, LCD_SCR_last_page)) {
 			bitClear(LCD_SCR_last, LCD_SCR_last_page);
-			lcd.clear();
 			bitClear(LCD_SCR_last, LCD_SCR_last_what);
-			refresh_all = 1;
+			memset(LCD_SCR_TotalV, 0, sizeof(LCD_SCR_TotalV));
+			memset(LCD_SCR_MinCellV, 0, sizeof(LCD_SCR_MinCellV));
+			memset(LCD_SCR_MaxCellV, 0, sizeof(LCD_SCR_MaxCellV));
 		}
 		uint8_t i = bitRead(LCD_SCR_last, LCD_SCR_last_what);
 		bitToggle(LCD_SCR_last, LCD_SCR_last_what);
 		if(!(LCD_SCR_last & _BV(LCD_SCR_last_what))) LCD_refresh_sec = LCD_REFRESH_PERIOD;
-		{
-			if(refresh_all) {
-				lcd.setCursor(0, i*2);
-				lcd.print('B');
-				lcd.print(i + 1);
-			} else lcd.setCursor(2, i*2);
-			lcd.print(bitRead(LCD_SCR_last, LCD_SCR_last_pulse) ? ':' : '.');
-			lcd.print(' ');
-			uint16_t sub_min = LCD_SCR_MinCellV[i] - bms_min_cell_mV[i];
-			uint16_t sub_max = LCD_SCR_MaxCellV[i] - bms_max_cell_mV[i];
-			if(last_error[i]) {
-				LCD_Display_Err(last_error[i], 16);
-				if(debugmode && i == 0 && bitRead(LCD_SCR_last, LCD_SCR_last_pulse)) {
-					lcd.setCursor(19, 0);
-					lcd.print('D');
-				}
-				bitSet(LCD_SCR_last, LCD_SCR_last_err1 + i);
-			} else {
-				if(bitRead(LCD_SCR_last, LCD_SCR_last_err1 + i)) refresh_all = 1;
-				bitClear(LCD_SCR_last, LCD_SCR_last_err1 + i);
+		lcd.setCursor(0, i*2);
+		lcd.print('B');
+		lcd.print(i + 1);
+		lcd.print(bitRead(LCD_SCR_last, LCD_SCR_last_pulse) ? ':' : '.');
+		lcd.print(' ');
+		uint16_t sub_min = LCD_SCR_MinCellV[i] - bms_min_cell_mV[i];
+		uint16_t sub_max = LCD_SCR_MaxCellV[i] - bms_max_cell_mV[i];
+		if(LCD_last_error[i]) {
+			LCD_Display_Err(LCD_last_error[i], 16);
+			if(debugmode && i == 0 && bitRead(LCD_SCR_last, LCD_SCR_last_pulse)) {
+				lcd.setCursor(19, 0);
+				lcd.print('D');
+			}
+			LCD_SCR_TotalV[i] = 0;
+		} else {
+			if(bms_total_mV[i]) {
 				if(bitRead(bms_flags[i], 0)) {
 					lcd.print(F("ON"));
 					lcd.print(bitRead(bms_flags[i], 0) ? '*' : ' ');
 				} else lcd.print(F("OFF"));
-				if(LCD_SCR_TotalV[i] != bms_total_mV[i] || refresh_all) {
+				if(LCD_SCR_TotalV[i] != bms_total_mV[i]) {
 					lcd.print(' ');
 					LCD_print_num_d3(LCD_SCR_TotalV[i] = bms_total_mV[i]);
-					lcd.print(F("V"));
+					lcd.print(F("V "));
 				}
-				if(sub_min != 0 || sub_max != 0 || refresh_all) {
+				if(sub_min != 0 || sub_max != 0) {
 					uint16_t n = bms_max_cell_mV[i] - bms_min_cell_mV[i];
 					if(debugmode && i == 0) {
-						lcd.setCursor(n > 99 ? 15 : 16, i*2 + 1);
-						lcd.print(0xA5); // '·'
+						lcd.setCursor(n > 99 ? 15 : 16, i*2);
+						lcd.print((char)0xA5); // '·'
 						lcd.print(n);
 						if(n < 1000) {
 							lcd.print(' ');
@@ -555,33 +539,44 @@ void LCD_Display(void)
 						}
 						if(bitRead(LCD_SCR_last, LCD_SCR_last_pulse)) lcd.print('D');
 					} else {
-						lcd.setCursor(n > 999 ? 15 : 16, i*2 + 1);
-						lcd.print(0xA5); // '·'
+						lcd.setCursor(n > 999 ? 15 : 16, i*2);
+						lcd.print((char)0xA5); // '·'
 						lcd.print(n);
 						if(n < 100) {
 							lcd.print(' ');
 							if(n < 10) lcd.print(' ');
 						}
 					}
-				} else if(debugmode && i == 0) {
-					lcd.setCursor(19, 0);
-					lcd.print(bitRead(LCD_SCR_last, LCD_SCR_last_pulse) ? 'D' : ' ');
+				} else {
+xFlashD:				if(debugmode && i == 0) {
+						lcd.setCursor(19, 0);
+						lcd.print(bitRead(LCD_SCR_last, LCD_SCR_last_pulse) ? 'D' : ' ');
+					}
 				}
+			} else {
+				lcd.print(F("waiting...      "));
+				goto xFlashD;
 			}
-			if(sub_min != 0 || refresh_all) {
-				lcd.setCursor(1, i*2 + 1);
-				LCD_print_num_d3(LCD_SCR_MinCellV[i] = bms_min_cell_mV[i]);
-				lcd.print('(');
-				lcd.print(bms_min_string[i]);
-				lcd.print(F(") "));
-			}
-			if(sub_max != 0 || refresh_all) {
-				lcd.setCursor(11, i*2 + 1);
-				LCD_print_num_d3(LCD_SCR_MaxCellV[i] = bms_max_cell_mV[i]);
-				lcd.print('(');
-				lcd.print(bms_max_string[i]);
-				lcd.print(F(") "));
-			}
+		}
+		if(sub_min != 0) {
+			lcd.setCursor(0, i*2 + 1);
+			lcd.print(' ');
+			LCD_print_num_d3(LCD_SCR_MinCellV[i] = bms_min_cell_mV[i]);
+			lcd.print('(');
+			uint8_t n;
+			lcd.print(n = bms_min_string[i]);
+			lcd.print(')');
+			if(n <= 9) lcd.print(' ');
+		}
+		if(sub_max != 0) {
+			lcd.setCursor(10, i*2 + 1);
+			lcd.print(' ');
+			LCD_print_num_d3(LCD_SCR_MaxCellV[i] = bms_max_cell_mV[i]);
+			lcd.print('(');
+			uint8_t n;
+			lcd.print(n = bms_max_string[i]);
+			lcd.print(')');
+			if(n <= 9) lcd.print(' ');
 		}
 		if(i) bitToggle(LCD_SCR_last, LCD_SCR_last_pulse);
 	} else if(LCD_page == 1) {
@@ -610,84 +605,84 @@ void DebugSerial_read(void)
 			*p = '\0';
 			DEBUG(F("CFG: ")); DEBUG(debug_read_buffer); DEBUG('=');
 			uint16_t d = strtol(p + 1, NULL, 0);
-			if(strncmp_P(debug_read_buffer, dbg_temp_correct, sizeof(dbg_temp_correct)-1) == 0) {
+			if(strcmp_P(debug_read_buffer, dbg_temp_correct) == 0) {
 				work.temp_correct = d;
 				DEBUG(work.temp_correct);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_temp, sizeof(dbg_temp)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_temp) == 0) {
 				temp = d + 50;
 				DEBUG(d);
-			} else if(strncmp_P(debug_read_buffer, dbg_bms, sizeof(dbg_bms)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_bms) == 0) {
 				if(d > BMS_NUM_MAX) d = BMS_NUM_MAX;
 				work.bms_num = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_cells, sizeof(dbg_cells)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_cells) == 0) {
 				if(d < 2) d = 2;
 				work.bms_cells_qty = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_period, sizeof(dbg_period)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_period) == 0) {
 				work.BMS_read_period = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_wait_answer, sizeof(dbg_wait_answer)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_wait_answer) == 0) {
 				work.BMS_wait_answer_time = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_rotate, sizeof(dbg_rotate)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_rotate) == 0) {
 				work.I2C_bms_rotate_period = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_round, sizeof(dbg_round)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_round) == 0) {
 				work.round = d;
 				DEBUGN(work.round == round_true ? "5/4" : work.round == round_cut ? "cut" : work.round == round_up ? "up" : "?");
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_correct, sizeof(dbg_correct)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_correct) == 0) {
 				work.V_correct = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_vmaxhyst, sizeof(dbg_vmaxhyst)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_vmaxhyst) == 0) {
 				work.Vmaxhyst = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_cell_min_V, sizeof(dbg_cell_min_V)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_cell_min_V) == 0) {
 				work.cell_min_V = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_cell_max_V, sizeof(dbg_cell_max_V)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_cell_max_V) == 0) {
 				work.cell_max_V = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_delta_default, sizeof(dbg_delta_default)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_delta_default) == 0) {
 				work.BalansDeltaDefault = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_delta_pause, sizeof(dbg_delta_pause)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_delta_pause) == 0) {
 				work.BalansDeltaPause = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_watchdog, sizeof(dbg_watchdog)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_watchdog) == 0) {
 				work.watchdog = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_options, sizeof(dbg_options)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_options) == 0) {
 				work.options = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
-			} else if(strncmp_P(debug_read_buffer, dbg_debug, sizeof(dbg_debug)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_debug) == 0) {
 				debug = d;
 				DEBUG(d);
-			} else if(strncmp_P(debug_read_buffer, dbg_seterr, sizeof(dbg_seterr)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_seterr) == 0) {
 				Set_New_Error(d);
 				DEBUG(d);
-			} else if(strncmp_P(debug_read_buffer, dbg_delta_change_pause, sizeof(dbg_delta_change_pause)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_delta_change_pause) == 0) {
 				delta_change_pause = d;
 				DEBUG(d);
-			} else if(strncmp_P(debug_read_buffer, dbg_read, sizeof(dbg_read)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_read) == 0) {
 				bitSet(flags, f_BMS_Need_Read);
 				DEBUG(d);
-			} else if(strncmp_P(debug_read_buffer, dbg_RWARN_period, sizeof(dbg_RWARN_period)-1) == 0) {
+			} else if(strcmp_P(debug_read_buffer, dbg_RWARN_period) == 0) {
 				work.RWARN_Send_Period = d;
 				DEBUG(d);
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
@@ -763,6 +758,7 @@ void BMS_Serial_read(void)
 		read_buffer[read_idx++] = r;
 		if(read_idx == sizeof(read_buffer)) {
 #endif
+			bitSet(flags, f_BMS_Read_Finish);
 			_err = ERR_BMS_Ok;
 			read_idx = 0;
 			if(read_buffer[0] != 0xEB || read_buffer[1] != 0x90) {
@@ -824,7 +820,6 @@ void BMS_Serial_read(void)
 					_err = ERR_BMS_Cell_Low;
 				} else if(bms_max_cell_mV[read_bms_num] <= work.cell_max_V) {
 					_err = ERR_BMS_Cell_High;
-					alarm[read_bms_num] = ALARM_BMS_Cell_High;
 				} else if(bms_max_cell_mV[read_bms_num] - bms_min_cell_mV[read_bms_num] >= work.cell_delta_max_V) {
 					_err = ERR_BMS_Cell_DeltaMax;
 				}
@@ -983,8 +978,6 @@ void BMS_Serial_read(void)
 					bitSet(flags, f_BMS_Ready);
 					bms_loop_time = millis();
 				}
-				if(_err == 0) _err = RWARN_OK;
-				bitSet(flags, f_BMS_ReadOk);
 				watchdog_BMS = 0;
 			} else if(debug) {
 				DEBUG(F("BMS"));
@@ -1076,7 +1069,8 @@ void setup()
 	memset(bms_max_string, 0, sizeof(bms_max_string));
 	memset(bms_flags, 0, sizeof(bms_flags));
 	memset(last_error, 0, sizeof(last_error));
-	RWARN_period = work.RWARN_Send_Period;
+	memset(LCD_last_error, 0, sizeof(LCD_last_error));
+	RWARN_period = work.RWARN_Send_Period + 2;
 	Wire.begin();
 	// deactivate internal pullups for twi.
 	digitalWrite(SDA, 0);
@@ -1147,7 +1141,7 @@ void setup()
 
 void loop()
 {
-	static uint32_t led_flashing, bms_reading, cnt100ms;
+	static uint32_t led_flashing, cnt100ms;
 	wdt_reset();
 	RWARN_check_send();
 	uint8_t _err;
@@ -1247,6 +1241,10 @@ void loop()
 #endif
 #ifdef LCD_ENABLED
 		if(LCD_refresh_sec) LCD_refresh_sec--;
+		for(uint8_t i = 0; i < BMS_NUM_MAX; i++) {
+			if(LCD_last_error_timeout[i] && --LCD_last_error_timeout[i] == 0) LCD_last_error[i] = 0;
+//			if((LCD_last_error[i] = last_error[i])) LCD_last_error_timeout[i] = LCD_ERR_DISPLAY_TIME;
+		}
 #endif
 	}
 
@@ -1280,9 +1278,9 @@ void loop()
 	}
 	if(debugmode != 1) {
 		BMS_Serial_read();
-		if(m - bms_last_read_time > work.BMS_wait_answer_time) {
+		if(m - bms_last_read_time > (bitRead(flags, f_BMS_Read_Finish) ? BMS_MIN_PAUSE_BETWEEN_READS : work.BMS_wait_answer_time)) {
 			if(bitRead(flags, f_BMS_Wait_Answer)) {
-				if(!bitRead(flags, f_BMS_ReadOk)) {
+				if(!bitRead(flags, f_BMS_Read_Finish)) {
 					if(debugmode) {	DEBUG(F("BMS not answer: ")); DEBUGN(read_bms_num + 1); }
 					Set_New_Error(ERR_BMS_NotAnswer);
 				}
@@ -1295,13 +1293,14 @@ void loop()
 			if(bitRead(flags, f_BMS_Need_Read) || bitRead(flags, f_BMS_Wait_Answer)) {
 				read_idx = 0;	// reset read index
 				if(debug == 3) { DEBUG(F("Send to BMS ")); DEBUGN(read_bms_num + 1); }
+				while(BMS_SERIAL.read() != -1) ; // flush RX
 				uint8_t crc = BMS_send_pgm_cmd(&BMS_Cmd_Head[0], sizeof(BMS_Cmd_Head), 0);
 				BMS_SERIAL.write(read_bms_num + 1);
 				crc += read_bms_num + 1;
 				if(delta_new_cnt) {
 					if(debugmode) {	DEBUGN(F(" Send Delta")); }
 					uint8_t b;
-					crc += BMS_send_pgm_cmd(&BMS_Cmd_ChangeDelta[0], sizeof(BMS_Cmd_ChangeDelta), 0);
+					crc = BMS_send_pgm_cmd(&BMS_Cmd_ChangeDelta[0], sizeof(BMS_Cmd_ChangeDelta), 0);
 					b = delta_new >> 8;
 					BMS_SERIAL.write(b);
 					crc += b;
@@ -1314,12 +1313,12 @@ void loop()
 						delta_change_pause = 0;
 					}
 				} else {
-					crc += BMS_send_pgm_cmd(&BMS_Cmd_Request[0], sizeof(BMS_Cmd_Request), crc);
+					crc = BMS_send_pgm_cmd(&BMS_Cmd_Request[0], sizeof(BMS_Cmd_Request), crc);
 				}
 				BMS_SERIAL.write(crc);
 				bms_last_read_time = m;
 				if(read_bms_num == 0) bitClear(flags, f_BMS_Need_Read);
-				bitClear(flags, f_BMS_ReadOk);
+				bitClear(flags, f_BMS_Read_Finish);
 				bitSet(flags, f_BMS_Wait_Answer);
 			}
 		}
