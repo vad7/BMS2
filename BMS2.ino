@@ -564,7 +564,7 @@ xFlashD:				if(debugmode && i == 0) {
 			LCD_print_num_d3(LCD_SCR_MinCellV[i] = bms_min_cell_mV[i]);
 			lcd.print('(');
 			uint8_t n;
-			lcd.print(n = bms_min_string[i]);
+			lcd.print(n = bms_min_string[i] + 1);
 			lcd.print(')');
 			if(n <= 9) lcd.print(' ');
 		}
@@ -574,7 +574,7 @@ xFlashD:				if(debugmode && i == 0) {
 			LCD_print_num_d3(LCD_SCR_MaxCellV[i] = bms_max_cell_mV[i]);
 			lcd.print('(');
 			uint8_t n;
-			lcd.print(n = bms_max_string[i]);
+			lcd.print(n = bms_max_string[i] + 1);
 			lcd.print(')');
 			if(n <= 9) lcd.print(' ');
 		}
@@ -672,6 +672,11 @@ void DebugSerial_read(void)
 				eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
 			} else if(strcmp_P(debug_read_buffer, dbg_debug) == 0) {
 				debug = d;
+#if defined(__AVR_ATmega328PB__)
+				debugmode = 2;
+#else
+				debugmode = 1;
+#endif
 				DEBUG(d);
 			} else if(strcmp_P(debug_read_buffer, dbg_seterr) == 0) {
 				Set_New_Error(d);
@@ -1279,6 +1284,7 @@ void loop()
 	if(debugmode != 1) {
 		BMS_Serial_read();
 		if(m - bms_last_read_time > (bitRead(flags, f_BMS_Read_Finish) ? BMS_MIN_PAUSE_BETWEEN_READS : work.BMS_wait_answer_time)) {
+			bms_last_read_time = m;
 			if(bitRead(flags, f_BMS_Wait_Answer)) {
 				if(!bitRead(flags, f_BMS_Read_Finish)) {
 					if(debugmode) {	DEBUG(F("BMS not answer: ")); DEBUGN(read_bms_num + 1); }
@@ -1316,7 +1322,6 @@ void loop()
 					crc = BMS_send_pgm_cmd(&BMS_Cmd_Request[0], sizeof(BMS_Cmd_Request), crc);
 				}
 				BMS_SERIAL.write(crc);
-				bms_last_read_time = m;
 				if(read_bms_num == 0) bitClear(flags, f_BMS_Need_Read);
 				bitClear(flags, f_BMS_Read_Finish);
 				bitSet(flags, f_BMS_Wait_Answer);
