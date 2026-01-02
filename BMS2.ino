@@ -528,7 +528,7 @@ xShowTotalV:
 			if(bms_min_cell_mV[i]) {
 				if(bitRead(bms_flags[i], 0)) {
 					lcd.print(F("ON"));
-					lcd.print(bitRead(bms_flags[i], 0) ? '*' : ' ');
+					lcd.print(bitRead(bms_flags[i], 1) ? '+' : ' ');
 				} else lcd.print(F("OFF"));
 				if(LCD_SCR_TotalV[i] != bms_total_mV[i]) {
 					lcd.print(' ');
