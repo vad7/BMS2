@@ -67,7 +67,7 @@ extern "C" {
 LiquidCrystal lcd( 2,  3,  4,  5,  6,  7);	// LCD 20x4
 //#define LCD_Backlite_pin	13
 #define LCD_REFRESH_PERIOD			2	// sec
-#define LCD_ERR_DISPLAY_TIME		3	// sec
+#define LCD_ERR_DISPLAY_TIME		10	// sec
 #endif
 //
 #define OUT_CELL_UNDER_V			16	// A2, active LOW
@@ -363,7 +363,7 @@ void Set_New_Error(uint8_t _err)
 	last_error[read_bms_num] = _err;
 	if(_err) {
 		LCD_last_error[read_bms_num] = _err;
-		LCD_last_error_timeout[read_bms_num] = LCD_ERR_DISPLAY_TIME;
+		LCD_last_error_timeout[read_bms_num] = work.BMS_read_period / 1000 + 1;
 		BLINK_ALARM;
 	}
 }
@@ -497,7 +497,7 @@ void LCD_Display(void)
 			memset(LCD_SCR_TotalV, 0, sizeof(LCD_SCR_TotalV));
 			memset(LCD_SCR_MinCellV, 0, sizeof(LCD_SCR_MinCellV));
 			memset(LCD_SCR_MaxCellV, 0, sizeof(LCD_SCR_MaxCellV));
-			if(bitRead(flags, f_BMS_Ready)) lcd.clear();
+			if(!bitRead(flags, f_BMS_Ready)) lcd.clear();
 		}
 		uint8_t i = bitRead(LCD_SCR_last, LCD_SCR_last_what);
 		bitToggle(LCD_SCR_last, LCD_SCR_last_what);
@@ -517,7 +517,7 @@ void LCD_Display(void)
 			}
 			LCD_SCR_TotalV[i] = 0;
 		} else {
-			if(bitRead(flags, f_BMS_Ready)) {
+			if(bms_min_cell_mV[i]) {
 				if(bitRead(bms_flags[i], 0)) {
 					lcd.print(F("ON"));
 					lcd.print(bitRead(bms_flags[i], 0) ? '*' : ' ');
