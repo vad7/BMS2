@@ -364,6 +364,11 @@ void Set_New_Error(uint8_t _err)
 	if(_err) {
 		LCD_last_error[read_bms_num] = _err;
 		LCD_last_error_timeout[read_bms_num] = work.BMS_read_period / 1000 + 1;
+
+		DEBUG("ERR! ");
+		DEBUGN(_err);
+
+
 		BLINK_ALARM;
 	}
 }
@@ -1256,7 +1261,14 @@ void loop()
 #ifdef LCD_ENABLED
 		if(LCD_refresh_sec) LCD_refresh_sec--;
 		for(uint8_t i = 0; i < BMS_NUM_MAX; i++) {
-			if(LCD_last_error_timeout[i] && --LCD_last_error_timeout[i] == 0) LCD_last_error[i] = 0;
+			if(LCD_last_error_timeout[i] && --LCD_last_error_timeout[i] == 0) {
+
+				LCD_last_error[i] = 0;
+
+
+				DEBUGN("CLEAR ERR");
+
+			}
 //			if((LCD_last_error[i] = last_error[i])) LCD_last_error_timeout[i] = LCD_ERR_DISPLAY_TIME;
 		}
 #endif
@@ -1297,6 +1309,10 @@ void loop()
 				if(!bitRead(flags, f_BMS_Read_Finish)) {
 					if(debugmode) {	DEBUG(F("BMS not answer: ")); DEBUGN(read_bms_num + 1); }
 					Set_New_Error(ERR_BMS_NotAnswer);
+
+					DEBUGN("NEW ERR TIMEOUT");
+
+
 				}
 				if(++read_bms_num == work.bms_num) {
 					read_bms_num = 0;
