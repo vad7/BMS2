@@ -590,6 +590,47 @@ xFlashD:				if(debugmode && i == 0) {
 #endif
 
 #ifdef DEBUG_TO_SERIAL
+void PrintInfoToSerial(void)
+{
+	DEBUG(F("BMS: ")); DEBUG(work.bms_num); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_bms); DEBUGN(F("=X)"));
+	DEBUG(F("Cells: ")); DEBUG(work.bms_cells_qty); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cells); DEBUGN(F("=X)"));
+	DEBUG(F("Watchdog(")); DEBUG(WATCHDOG_NO_CONN); DEBUG(F("s): ")); if(!work.watchdog) DEBUG(F("NONE")); else { if(work.watchdog & 1) DEBUG(F("I2C ")); if(work.watchdog & 2) DEBUG(F("BMS")); }
+	DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_watchdog); DEBUGN(F("=1-I2C,2-BMS,3-all)"));
+	DEBUG(F("RS485: ")); DEBUG(BMS_SERIAL_RATE); DEBUGN(F(" 8N1"));
+	DEBUG(F("BMS MODBUS IDs: ")); for(uint8_t i = 1; i <= BMS_NUM_MAX; i++) { DEBUG(i); DEBUG(' '); }
+	DEBUG(F("\nBMS read period, ms: "));
+	if(work.BMS_read_period > 1) DEBUG(work.BMS_read_period);
+	else if(work.BMS_read_period == 1) DEBUG(F("Synch I2C"));
+	else DEBUG(F("OFF"));
+	DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_period); DEBUGN(F("=0-off,1-synch,X ms)"));
+	DEBUG(F("Wait answer from BMS, ms: ")); DEBUG(work.BMS_wait_answer_time); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_wait_answer); DEBUGN(F("=X)"));
+	DEBUG(F("BMS rotate period: ")); DEBUG(work.I2C_bms_rotate_period); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_rotate); DEBUGN(F("=X)"));
+	DEBUG(F("Remote warning period [D")); DEBUG(RWARN_PULSE_PIN); DEBUG(F("]: ")); DEBUG(work.RWARN_Send_Period); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_RWARN_period); DEBUGN(F("=X)"));
+	//DEBUG(F("Options(bits: median,average): ")); if(bitRead(work.options, o_average)) DEBUG(F("average ")); if(bitRead(work.options, o_median)) DEBUG(F("median ")); DEBUG("\n");
+	DEBUG(F("BMS cell min, mV: ")); DEBUG(work.cell_min_V); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cell_min_V); DEBUGN(F("=NNNN)"));
+	DEBUG(F("BMS cell max, mV: ")); DEBUG(work.cell_max_V); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cell_max_V); DEBUGN(F("=NNNN)"));
+	DEBUG(F("BMS cell delta max, mV: ")); DEBUG(work.cell_delta_max_V); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cell_delta_max_V); DEBUGN(F("=NNNN)"));
+	DEBUG(F("Options: ")); if(bitRead(work.options, o_average)) DEBUG(F("average ")); if(bitRead(work.options, o_equalize_cells_V)) DEBUG(F("equalize ")); DEBUGN("(options=+1-average,+2-equalize)");
+	DEBUG(F("BMS voltage round: ")); DEBUG(work.round == round_true ? F("5/4") : work.round == round_cut ? F("cut") : work.round == round_up ? F("up") : F("?"));
+	DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_round); DEBUGN(F("=0-5/4,1-cut,2-up)"));
+	DEBUG(F("BMS voltage correct, mV: ")); DEBUG(work.V_correct); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_correct); DEBUGN(F("=X)"));
+	DEBUG(F("BMS cell max catch, 10mV: ")); if(work.Vmaxhyst) { DEBUG('+'); DEBUG(work.Vmaxhyst); } else DEBUG(F("OFF"));
+	DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_vmaxhyst); DEBUGN(F("=X)"));
+	DEBUG(F("BMS Temp correct, C: ")); DEBUG(work.temp_correct); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_temp_correct); DEBUGN(F("=X)"));
+	DEBUG(F("BMS Balans delta, mV: "));
+	if(work.BalansDeltaDefault) DEBUG(work.BalansDeltaDefault); else DEBUG(F("OFF"));
+	DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_delta_default); DEBUGN(F("=X)"));
+	DEBUGN(F("BMS Balans delta, [MPPT(I)>=A:mV]: "));
+	DEBUG(F(" Current: ")); DEBUG(work.BalansDeltaI); DEBUG(F(", Delta: ")); DEBUGN(work.BalansDelta);
+	DEBUG(F("BMS Balans delta decrease pause, minutes: ")); DEBUG(work.BalansDeltaPause);  DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_delta_pause); DEBUGN(F("=X)"));
+	DEBUGN(F("\nCommands:"));
+	DEBUG((const __FlashStringHelper*)dbg_debug); DEBUGN(F("=0,1,2,3"));
+	DEBUG((const __FlashStringHelper*)dbg_temp); DEBUGN(F("=X"));
+	DEBUG((const __FlashStringHelper*)dbg_delta_change_pause); DEBUGN(F("=X"));
+	DEBUG((const __FlashStringHelper*)dbg_read); DEBUGN(F("=1"));
+	DEBUGN(F("Out: Vn=X (All: n=0)\nQn=X"));
+	DEBUG((const __FlashStringHelper*)dbg_seterr); DEBUGN(F("=X"));
+}
 
 void DebugSerial_read(void)
 {
@@ -601,7 +642,10 @@ void DebugSerial_read(void)
 			debug_read_buffer[debug_read_idx-1] = '\0';
 			debug_read_idx = 0;
 			char *p = strchr(debug_read_buffer, '=');
-			if(p == NULL) break;
+			if(p == NULL) {
+				if(debug_read_buffer[1] == '\0' && (debug_read_buffer[0] == '?' || debug_read_buffer[0] == 'h')) PrintInfoToSerial();
+				break;
+			}
 			*p = '\0';
 			DEBUG(F("CFG: ")); DEBUG(debug_read_buffer); DEBUG('=');
 			uint16_t d = strtol(p + 1, NULL, 0);
@@ -758,7 +802,6 @@ void BMS_Serial_read(void)
 	uint8_t _err = 255;
 	while(BMS_SERIAL.available()) {
 		int16_t r = BMS_SERIAL.read();
-		bms_last_read_time = millis();
 		if(r == -1) break;
 		read_buffer[read_idx++] = r;
 		if(read_idx == sizeof(read_buffer)) {
@@ -793,24 +836,26 @@ void BMS_Serial_read(void)
 					DEBUG(F("New delta: ")); DEBUGN(delta_active);
 				}
 				watchdog_BMS = 0;
-				bms_last_read_time = millis();
 			} else if(read_buffer[BMS_OFFSET_Cmd] == 0xFF) { // Request answer
-				if(read_buffer[BMS_OFFSET_Alarm] & 0x03) {
+				uint8_t n = read_buffer[BMS_OFFSET_Alarm] & 0x07;
+				if(n) {
 					DEBUGIF(1,F("BMS"));
 					DEBUGIF(1, read_bms_num + 1);
-					DEBUGIF(1,F(" Alarm: "));
-					if(read_buffer[BMS_OFFSET_Alarm] & (1<<0)) { // cells num wrong
+					DEBUGIF(1,F(" Alarm "));
+					DEBUGIF(1,n);
+					DEBUGIF(1,F(": "));
+					if(n & (1<<0)) { // cells num wrong
 						DEBUGIF(1,F("Cells_Num "));
 						_err = ERR_BMS_Config;
 					}
-					if(read_buffer[BMS_OFFSET_Alarm] & (1<<1)) { // wire resistance is too large
+					if(n & (1<<1)) { // wire resistance is too large
 						DEBUGIF(1,F("Wire_Resistance "));
 						_err = ERR_BMS_Resistance;
 					}
-	//				if(read_buffer[BMS_OFFSET_Alarm] & (1<<2)) { // battery overvoltage
-	//					last_error = ERR_BMS_Resistance;
-	//					DEBUG(F("Overvoltage"));
-	//				}
+					if(n & (1<<2)) { // battery overvoltage
+						DEBUGIF(1,F("Overvoltage"));
+						_err = ERR_BMS_Config;
+					}
 					DEBUGIF(1,'\n');
 				}
 				int16_t totalV = read_buffer[BMS_OFFSET_TotalV]*256 + read_buffer[BMS_OFFSET_TotalV + 1];
@@ -1046,7 +1091,7 @@ void setup()
  #endif
 	if(debugmode) {
 		DEBUG(F("\nBMS n->1 gate to Microart, v")); DEBUGN(VERSION);
-		DEBUGN(F("Copyright by Vadim Kulakov (c) 2025, vad7@yahoo.com"));
+		DEBUGN(F("Copyright by Vadim Kulakov (c) 2026, vad7@yahoo.com"));
 	}
 #endif
 	if(digitalPinToPort(BUZZER_PD1) != digitalPinToPort(BUZZER_PD2) || digitalPinToPort(BUZZER_PD1) != digitalPinToPort(BUZZER_PD3)) {
@@ -1090,56 +1135,19 @@ void setup()
 	Wire.onReceive(I2C_Receive); // register event
 	i2c_set_slave_addr(0);
 #ifdef DEBUG_TO_SERIAL
-	if(debugmode) {
-		DEBUG(F("BMS: ")); DEBUG(work.bms_num); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_bms); DEBUGN(F("=X)"));
-		DEBUG(F("Cells: ")); DEBUG(work.bms_cells_qty); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cells); DEBUGN(F("=X)"));
-		DEBUG(F("Watchdog(")); DEBUG(WATCHDOG_NO_CONN); DEBUG(F("s): ")); if(!work.watchdog) DEBUG(F("NONE")); else { if(work.watchdog & 1) DEBUG(F("I2C ")); if(work.watchdog & 2) DEBUG(F("BMS")); }
-		DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_watchdog); DEBUGN(F("=1-I2C,2-BMS,3-all)"));
-		DEBUG(F("RS485: ")); DEBUG(BMS_SERIAL_RATE); DEBUGN(F(" 8N1"));
-		DEBUG(F("BMS MODBUS IDs: ")); for(uint8_t i = 1; i <= BMS_NUM_MAX; i++) { DEBUG(i); DEBUG(' '); }
-		DEBUG(F("\nBMS read period, ms: "));
-		if(work.BMS_read_period > 1) DEBUG(work.BMS_read_period);
-		else if(work.BMS_read_period == 1) DEBUG(F("Synch I2C"));
-		else DEBUG(F("OFF"));
-		DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_period); DEBUGN(F("=0-off,1-synch,X ms)"));
-		DEBUG(F("Wait answer from BMS, ms: ")); DEBUG(work.BMS_wait_answer_time); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_wait_answer); DEBUGN(F("=X)"));
-		DEBUG(F("BMS rotate period: ")); DEBUG(work.I2C_bms_rotate_period); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_rotate); DEBUGN(F("=X)"));
-		DEBUG(F("Remote warning period [D")); DEBUG(RWARN_PULSE_PIN); DEBUG(F("]: ")); DEBUG(work.RWARN_Send_Period); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_RWARN_period); DEBUGN(F("=X)"));
-		//DEBUG(F("Options(bits: median,average): ")); if(bitRead(work.options, o_average)) DEBUG(F("average ")); if(bitRead(work.options, o_median)) DEBUG(F("median ")); DEBUG("\n");
-		DEBUG(F("BMS cell min, mV: ")); DEBUG(work.cell_min_V); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cell_min_V); DEBUGN(F("=NNNN)"));
-		DEBUG(F("BMS cell max, mV: ")); DEBUG(work.cell_max_V); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cell_max_V); DEBUGN(F("=NNNN)"));
-		DEBUG(F("BMS cell delta max, mV: ")); DEBUG(work.cell_delta_max_V); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cell_delta_max_V); DEBUGN(F("=NNNN)"));
-		DEBUG(F("Options: ")); if(bitRead(work.options, o_average)) DEBUG(F("average ")); if(bitRead(work.options, o_equalize_cells_V)) DEBUG(F("equalize ")); DEBUGN("(options=+1-average,+2-equalize)");
-		DEBUG(F("BMS voltage round: ")); DEBUG(work.round == round_true ? F("5/4") : work.round == round_cut ? F("cut") : work.round == round_up ? F("up") : F("?"));
-		DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_round); DEBUGN(F("=0-5/4,1-cut,2-up)"));
-		DEBUG(F("BMS voltage correct, mV: ")); DEBUG(work.V_correct); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_correct); DEBUGN(F("=X)"));
-		DEBUG(F("BMS cell max catch, 10mV: ")); if(work.Vmaxhyst) { DEBUG('+'); DEBUG(work.Vmaxhyst); } else DEBUG(F("OFF"));
-		DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_vmaxhyst); DEBUGN(F("=X)"));
-		DEBUG(F("BMS Temp correct, C: ")); DEBUG(work.temp_correct); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_temp_correct); DEBUGN(F("=X)"));
-		DEBUG(F("BMS Balans delta, mV: "));
-		if(work.BalansDeltaDefault) DEBUG(work.BalansDeltaDefault); else DEBUG(F("OFF"));
-		DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_delta_default); DEBUGN(F("=X)"));
-		DEBUGN(F("BMS Balans delta, [MPPT(I)>=A:mV]: "));
-		DEBUG(F(" Current: ")); DEBUG(work.BalansDeltaI); DEBUG(F(", Delta: ")); DEBUGN(work.BalansDelta);
-		DEBUG(F("BMS Balans delta decrease pause, minutes: ")); DEBUG(work.BalansDeltaPause);  DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_delta_pause); DEBUGN(F("=X)"));
-		DEBUGN(F("\nCommands:"));
-		DEBUG((const __FlashStringHelper*)dbg_debug); DEBUGN(F("=0,1,2,3"));
-		DEBUG((const __FlashStringHelper*)dbg_temp); DEBUGN(F("=X"));
-		DEBUG((const __FlashStringHelper*)dbg_delta_change_pause); DEBUGN(F("=X"));
-		DEBUG((const __FlashStringHelper*)dbg_read); DEBUGN(F("=1"));
-		DEBUGN(F("Out: Vn=X (All: n=0)\nQn=X"));
-		DEBUG((const __FlashStringHelper*)dbg_seterr); DEBUGN(F("=X"));
-	}
+	if(debugmode) PrintInfoToSerial();
 #endif
 #ifdef LCD_ENABLED
 	lcd.begin(20, 4); // Setup: cols, rows
 	lcd.print(F("BMS2 v"));
 	lcd.print(VERSION);
-	lcd.print(F(", 12.2025"));
+	lcd.print(F(", 01.2026"));
 	lcd.setCursor(0, 1);
 	lcd.print(F("(C) Vadim Kulakov"));
 	lcd.setCursor(0, 2);
 	lcd.print(F("vad7@yahoo.com"));
+	lcd.setCursor(0, 3);
+	lcd.print(F("USB UART: '?' - help"));
 #endif
 	FlashLED(3, 1, 1);
 }
@@ -1281,10 +1289,9 @@ void loop()
 		bms_reading = m;
 		bitSet(flags, f_BMS_Need_Read);
 	}
-	if(debugmode != 1) {
+	if(debugmode != 1 && (flags & (_BV(f_BMS_Wait_Answer) | _BV(f_BMS_Need_Read)))) {
 		BMS_Serial_read();
 		if(m - bms_last_read_time > (bitRead(flags, f_BMS_Read_Finish) ? BMS_MIN_PAUSE_BETWEEN_READS : work.BMS_wait_answer_time)) {
-			bms_last_read_time = m;
 			if(bitRead(flags, f_BMS_Wait_Answer)) {
 				if(!bitRead(flags, f_BMS_Read_Finish)) {
 					if(debugmode) {	DEBUG(F("BMS not answer: ")); DEBUGN(read_bms_num + 1); }
@@ -1292,13 +1299,12 @@ void loop()
 				}
 				if(++read_bms_num == work.bms_num) {
 					read_bms_num = 0;
-					bms_reading = m;
 					bitClear(flags, f_BMS_Wait_Answer);
 				}
 			}
-			if(bitRead(flags, f_BMS_Need_Read) || bitRead(flags, f_BMS_Wait_Answer)) {
-				read_idx = 0;	// reset read index
+			if((flags & (_BV(f_BMS_Wait_Answer) | _BV(f_BMS_Need_Read)))) {
 				if(debug == 3) { DEBUG(F("Send to BMS ")); DEBUGN(read_bms_num + 1); }
+				read_idx = 0;	// reset read index
 				while(BMS_SERIAL.read() != -1) ; // flush RX
 				uint8_t crc = BMS_send_pgm_cmd(&BMS_Cmd_Head[0], sizeof(BMS_Cmd_Head), 0);
 				BMS_SERIAL.write(read_bms_num + 1);
@@ -1323,6 +1329,7 @@ void loop()
 				}
 				BMS_SERIAL.write(crc);
 				if(read_bms_num == 0) bitClear(flags, f_BMS_Need_Read);
+				bms_last_read_time = m;
 				bitClear(flags, f_BMS_Read_Finish);
 				bitSet(flags, f_BMS_Wait_Answer);
 			}
