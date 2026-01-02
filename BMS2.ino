@@ -459,16 +459,18 @@ uint8_t  LCD_refresh_sec = 3;	// счетчик обновления LCD
 uint8_t  LCD_page = 0;
 
 // Outs error text and fills remaining space in string with spaces
-void LCD_Display_Err(uint8_t _err, int8_t space)
+bool LCD_Display_Err(uint8_t _err, int8_t space)
 {
-	const char *str PROGMEM;
+	const char *str;
 	if(_err == ERR_BMS_NotAnswer) str = sERR_BMS_NotAnswer;
 	else if(_err == ERR_BMS_Read) str = sERR_BMS_Read;
-	else if(_err == ERR_BMS_Resistance) str = sERR_BMS_Resistance;
 	else if(_err == ERR_BMS_Config) str = sERR_BMS_Config;
+	else if(_err == ERR_BMS_Resistance) str = sERR_BMS_Resistance;
+	else return false;
 	lcd.print((const __FlashStringHelper *)str);
 	int8_t n = space - strlen_P(str);
 	while(n-- > 0) lcd.print(' ');
+	return true;
 }
 
 // n.nnn
@@ -509,14 +511,20 @@ void LCD_Display(void)
 		lcd.print(' ');
 		uint16_t sub_min = LCD_SCR_MinCellV[i] - bms_min_cell_mV[i];
 		uint16_t sub_max = LCD_SCR_MaxCellV[i] - bms_max_cell_mV[i];
-		if(LCD_last_error[i]) {
-			LCD_Display_Err(LCD_last_error[i], 16);
+		uint8_t e = LCD_last_error[i];
+		char warn_char = 'D';
+		if(e) {
+			if(!LCD_Display_Err(e, 16)) {
+				warn_char = '!';
+				goto xShowTotalV;
+			}
 			if(debugmode && i == 0 && bitRead(LCD_SCR_last, LCD_SCR_last_pulse)) {
 				lcd.setCursor(19, 0);
-				lcd.print('D');
+				lcd.print(warn_char);
 			}
 			LCD_SCR_TotalV[i] = 0;
 		} else {
+xShowTotalV:
 			if(bms_min_cell_mV[i]) {
 				if(bitRead(bms_flags[i], 0)) {
 					lcd.print(F("ON"));
@@ -526,6 +534,13 @@ void LCD_Display(void)
 					lcd.print(' ');
 					LCD_print_num_d3(LCD_SCR_TotalV[i] = bms_total_mV[i]);
 					lcd.print(F("V "));
+				}
+				if(warn_char == '!') { // Error
+					lcd.setCursor(16, i*2);
+					lcd.print('E');
+					lcd.print(e);
+					lcd.print(' ');
+					goto xFlashD;
 				}
 				if(sub_min != 0 || sub_max != 0) {
 					uint16_t n = bms_max_cell_mV[i] - bms_min_cell_mV[i];
@@ -538,7 +553,7 @@ void LCD_Display(void)
 							if(n < 100) lcd.print(' ');
 							if(n < 10) lcd.print(' ');
 						}
-						if(bitRead(LCD_SCR_last, LCD_SCR_last_pulse)) lcd.print('D');
+						if(bitRead(LCD_SCR_last, LCD_SCR_last_pulse)) lcd.print(warn_char);
 					} else {
 						lcd.setCursor(n > 999 ? 15 : 16, i*2);
 						lcd.print((char)0xA5); // '·'
@@ -549,9 +564,10 @@ void LCD_Display(void)
 						}
 					}
 				} else {
-xFlashD:				if(debugmode && i == 0) {
+xFlashD:
+					if(debugmode && i == 0) {
 						lcd.setCursor(19, 0);
-						lcd.print(bitRead(LCD_SCR_last, LCD_SCR_last_pulse) ? 'D' : ' ');
+						lcd.print(bitRead(LCD_SCR_last, LCD_SCR_last_pulse) ? warn_char : ' ');
 					}
 				}
 			} else {
@@ -578,6 +594,9 @@ xFlashD:				if(debugmode && i == 0) {
 			lcd.print(n = bms_max_string[i] + 1);
 			lcd.print(')');
 			if(n <= 9) lcd.print(' ');
+		}
+		if(warn_char == '!') { // Error
+			LCD_SCR_MinCellV[i] = LCD_SCR_MaxCellV[i] = 0;
 		}
 		if(i) bitToggle(LCD_SCR_last, LCD_SCR_last_pulse);
 	} else if(LCD_page == 1) {
@@ -847,7 +866,7 @@ void BMS_Serial_read(void)
 					DEBUGIF(1,F(": "));
 					if(n & (1<<0)) { // cells num wrong
 						DEBUGIF(1,F("Cells_Num "));
-						_err = ERR_BMS_Config;
+						//_err = ERR_BMS_Config;
 					}
 					if(n & (1<<1)) { // wire resistance is too large
 						DEBUGIF(1,F("Wire_Resistance "));
@@ -867,11 +886,11 @@ void BMS_Serial_read(void)
 				bms_min_cell_mV[read_bms_num] = read_buffer[BMS_OFFSET_CellsV_Array + read_buffer[BMS_OFFSET_LowV_Cell]*2]*256 + read_buffer[BMS_OFFSET_CellsV_Array+1 + read_buffer[BMS_OFFSET_LowV_Cell]*2];
 				bms_max_string[read_bms_num] = read_buffer[BMS_OFFSET_HighV_Cell];
 				bms_max_cell_mV[read_bms_num] = read_buffer[BMS_OFFSET_CellsV_Array + read_buffer[BMS_OFFSET_HighV_Cell]*2]*256 + read_buffer[BMS_OFFSET_CellsV_Array+1 + read_buffer[BMS_OFFSET_HighV_Cell]*2];
-				if(bms_min_cell_mV[read_bms_num] <= work.cell_min_V) {
+				if(bms_min_cell_mV[read_bms_num] < work.cell_min_V) {
 					_err = ERR_BMS_Cell_Low;
-				} else if(bms_max_cell_mV[read_bms_num] <= work.cell_max_V) {
+				} else if(bms_max_cell_mV[read_bms_num] > work.cell_max_V) {
 					_err = ERR_BMS_Cell_High;
-				} else if(bms_max_cell_mV[read_bms_num] - bms_min_cell_mV[read_bms_num] >= work.cell_delta_max_V) {
+				} else if(bms_max_cell_mV[read_bms_num] - bms_min_cell_mV[read_bms_num] > work.cell_delta_max_V) {
 					_err = ERR_BMS_Cell_DeltaMax;
 				}
 	#ifdef DEBUG_TO_SERIAL
@@ -947,7 +966,6 @@ void BMS_Serial_read(void)
 						DEBUG(F("BMS V="));
 						for(uint8_t i = 0; i < work.bms_cells_qty; i++) { DEBUG(bms[read_bms_num][i]); DEBUG(F(" ")); }
 						DEBUG(F("\nTotalV diff ")); DEBUG(totalV); DEBUG(": ");
-
 					}
 					bool allow = false;
 					int8_t d = totalV > 0 ? 1 : -1;
@@ -1293,6 +1311,7 @@ void loop()
 	if(debugmode != 1 && (flags & (_BV(f_BMS_Wait_Answer) | _BV(f_BMS_Need_Read)))) {
 		BMS_Serial_read();
 		if(m - bms_last_read_time > (bitRead(flags, f_BMS_Read_Finish) ? BMS_MIN_PAUSE_BETWEEN_READS : work.BMS_wait_answer_time)) {
+			bms_last_read_time = m;
 			if(bitRead(flags, f_BMS_Wait_Answer)) {
 				if(!bitRead(flags, f_BMS_Read_Finish)) {
 					if(debugmode) {	DEBUG(F("BMS not answer: ")); DEBUGN(read_bms_num + 1); }
@@ -1330,7 +1349,6 @@ void loop()
 				}
 				BMS_SERIAL.write(crc);
 				if(read_bms_num == 0) bitClear(flags, f_BMS_Need_Read);
-				bms_last_read_time = m;
 				bitClear(flags, f_BMS_Read_Finish);
 				bitSet(flags, f_BMS_Wait_Answer);
 			}
