@@ -255,7 +255,7 @@ enum {
 };
 
 struct RWARN_BMS {
-	uint8_t  last_status;	// bms_flags (b7=on/off, b6=balancing) + last_error ERR_BMS_*
+	uint8_t  last_status;	// bms_flags (b7=balancing, b6=on/off) + last_error ERR_BMS_*
 	uint8_t  bms_min_string;
 	uint8_t  bms_max_string;
 	uint16_t bms_min_cell_mV;
@@ -418,11 +418,6 @@ void RWARN_check_send(void)
 				RWARN_BMS *ptr = (RWARN_BMS *) &rwarn_buf[1];
 				for(uint8_t i = 0; i < work.bms_num; i++) {
 					ptr->last_status = (bms_flags[i]<<6) | last_error[i];
-
-
-					DEBUG("ST: "); DEBUGN(ptr->last_status);
-
-
 					ptr->bms_min_string = bms_min_string[i];
 					ptr->bms_max_string = bms_max_string[i];
 					ptr->bms_min_cell_mV = bms_min_cell_mV[i];
