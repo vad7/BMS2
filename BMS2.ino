@@ -174,8 +174,8 @@ enum {
 
 enum { // options bits
 	o_average = 0,
-//	o_median = 1,
-	o_equalize_cells_V	// корректировать напряжения на ячейках, чтобы сумма V ячеек соответствовала TotalV
+	o_equalize_cells_V = 1	// корректировать напряжения на ячейках, чтобы сумма V ячеек соответствовала TotalV
+//	o_median = 2,
 };
 
 enum I2C_MAP_MODE {
@@ -198,9 +198,9 @@ struct WORK {
 	int16_t  V_correct;				// mV
 	int8_t   temp_correct;			// mV
 	uint8_t  watchdog;				// reboot if no data over: 1 - I2C, 2 - BMS
-	uint16_t cell_min_V;			// alarm, mV
-	uint16_t cell_max_V;			// alarm, mV
-	uint16_t cell_delta_max_V;		// alarm, mV
+	int16_t  cell_min_V;			// alarm, mV
+	int16_t  cell_max_V;			// alarm, mV
+	int16_t  cell_delta_max_V;		// alarm, mV
 	int16_t  Vmaxhyst;				// *10mV
 	uint16_t BalansDeltaPause;		// minutes wait for change to default delta
 	uint16_t BalansDeltaDefault;	// Default balans delta voltage, mV
@@ -217,11 +217,11 @@ struct _EEPROM EEMEM EEPROM = {
 	.work = {
 		.bms_num = 2,
 		.bms_cells_qty = 16,
-		.options = (1<<o_equalize_cells_V),
+		.options = (0<<o_equalize_cells_V),
 		.BMS_read_period = 5000,
 		.BMS_wait_answer_time = 1000,
 		.I2C_bms_rotate_period = 5,
-		.round = round_true,
+		.round = round_cut,
 		.V_correct = 0,
 		.temp_correct = 6,
 		.watchdog = 0,
@@ -280,24 +280,24 @@ uint8_t  bms_Q[BMS_CELLS_QTY_MAX];// %
 uint8_t  bms_idx = 0;
 uint8_t  bms_idx_prev = 0;
 uint32_t bms_loop_time;
-uint8_t  bms_flags[BMS_NUM_MAX];	// b0 - on/off, b1 - balance current > 0
-uint16_t bms_min_cell_mV[BMS_NUM_MAX];	// *1mV
+uint8_t  bms_flags[BMS_NUM_MAX];		// b1 - balance current > 0, b0 - on/off
+int16_t  bms_min_cell_mV[BMS_NUM_MAX];	// *1mV
 uint8_t  bms_min_string[BMS_NUM_MAX];
-uint16_t bms_max_cell_mV[BMS_NUM_MAX];	// *1mV
+int16_t  bms_max_cell_mV[BMS_NUM_MAX];	// *1mV
 uint8_t  bms_max_string[BMS_NUM_MAX];
 int32_t  bms_total_mV[BMS_NUM_MAX];		// *1mV
 uint32_t sec_timer = 0;
 uint8_t  watchdog_I2C = 0;
 uint8_t  watchdog_BMS = 0;
 uint8_t  I2C_bms_send_switch_timer = 0;
-int16_t  map_cell_min = 0;			// *10mV (1 cell)
-int16_t  map_cell_full = 0;			// *10mV (1 cell)
-int16_t  bms_cell_max[BMS_NUM_MAX];		// *10mV
-int16_t  bms_cell_min[BMS_NUM_MAX];		// *10mV
+int16_t  map_cell_min = 0;				// *10mV (1 cell)
+int16_t  map_cell_full = 0;				// *10mV (1 cell)
+int16_t  i2c_cell_max[BMS_NUM_MAX];		// *10mV
+int16_t  i2c_cell_min[BMS_NUM_MAX];		// *10mV
 uint8_t  selected_bms = 0;
 uint8_t  sending_bms = 0;
 uint8_t  map_mode = M_NOT_READ;
-uint8_t  temp = BMS_NO_TEMP;		// C, +50
+uint8_t  temp = BMS_NO_TEMP;			// C, +50
 uint8_t  crc;
 uint8_t  last_error[BMS_NUM_MAX];
 uint8_t  LCD_last_error[BMS_NUM_MAX];
@@ -581,7 +581,7 @@ xFlashD:
 			LCD_print_num_d3(LCD_SCR_MinCellV[i] = bms_min_cell_mV[i]);
 			lcd.print('(');
 			uint8_t n;
-			lcd.print(n = bms_min_string[i] + 1);
+			lcd.print(n = bms_min_string[i]);
 			lcd.print(')');
 			if(n <= 9) lcd.print(' ');
 		}
@@ -591,7 +591,7 @@ xFlashD:
 			LCD_print_num_d3(LCD_SCR_MaxCellV[i] = bms_max_cell_mV[i]);
 			lcd.print('(');
 			uint8_t n;
-			lcd.print(n = bms_max_string[i] + 1);
+			lcd.print(n = bms_max_string[i]);
 			lcd.print(')');
 			if(n <= 9) lcd.print(' ');
 		}
@@ -630,7 +630,7 @@ void PrintInfoToSerial(void)
 	DEBUG(F("BMS cell min, mV: ")); DEBUG(work.cell_min_V); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cell_min_V); DEBUGN(F("=NNNN)"));
 	DEBUG(F("BMS cell max, mV: ")); DEBUG(work.cell_max_V); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cell_max_V); DEBUGN(F("=NNNN)"));
 	DEBUG(F("BMS cell delta max, mV: ")); DEBUG(work.cell_delta_max_V); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cell_delta_max_V); DEBUGN(F("=NNNN)"));
-	DEBUG(F("Options: ")); if(bitRead(work.options, o_average)) DEBUG(F("average ")); if(bitRead(work.options, o_equalize_cells_V)) DEBUG(F("equalize ")); DEBUGN("(options=+1-average,+2-equalize)");
+	DEBUG(F("Options: ")); if(bitRead(work.options, o_average)) DEBUG(F("average ")); if(bitRead(work.options, o_equalize_cells_V)) DEBUG(F("equalize ")); DEBUGN("(options=+1(average),+2(equalize))");
 	DEBUG(F("BMS voltage round: ")); DEBUG(work.round == round_true ? F("5/4") : work.round == round_cut ? F("cut") : work.round == round_up ? F("up") : F("?"));
 	DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_round); DEBUGN(F("=0-5/4,1-cut,2-up)"));
 	DEBUG(F("BMS voltage correct, mV: ")); DEBUG(work.V_correct); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_correct); DEBUGN(F("=X)"));
@@ -882,17 +882,6 @@ void BMS_Serial_read(void)
 				int16_t totalV_by_cells = 0;
 				uint16_t balance_current = read_buffer[BMS_OFFSET_BalansI]*256 + read_buffer[BMS_OFFSET_BalansI + 1];
 				bms_flags[read_bms_num] = ((balance_current > 0)<<1) | (read_buffer[BMS_OFFSET_BalansOn] == 1);
-				bms_min_string[read_bms_num] = read_buffer[BMS_OFFSET_LowV_Cell];
-				bms_min_cell_mV[read_bms_num] = read_buffer[BMS_OFFSET_CellsV_Array + read_buffer[BMS_OFFSET_LowV_Cell]*2]*256 + read_buffer[BMS_OFFSET_CellsV_Array+1 + read_buffer[BMS_OFFSET_LowV_Cell]*2];
-				bms_max_string[read_bms_num] = read_buffer[BMS_OFFSET_HighV_Cell];
-				bms_max_cell_mV[read_bms_num] = read_buffer[BMS_OFFSET_CellsV_Array + read_buffer[BMS_OFFSET_HighV_Cell]*2]*256 + read_buffer[BMS_OFFSET_CellsV_Array+1 + read_buffer[BMS_OFFSET_HighV_Cell]*2];
-				if(bms_min_cell_mV[read_bms_num] < work.cell_min_V) {
-					_err = ERR_BMS_Cell_Low;
-				} else if(bms_max_cell_mV[read_bms_num] > work.cell_max_V) {
-					_err = ERR_BMS_Cell_High;
-				} else if(bms_max_cell_mV[read_bms_num] - bms_min_cell_mV[read_bms_num] > work.cell_delta_max_V) {
-					_err = ERR_BMS_Cell_DeltaMax;
-				}
 	#ifdef DEBUG_TO_SERIAL
 				if(debug == 3) {
 					DEBUG(F("BMS ")); DEBUG(read_bms_num + 1);	DEBUG(' ');
@@ -912,16 +901,24 @@ void BMS_Serial_read(void)
 					_err = ERR_BMS_Config;
 					if(read_buffer[BMS_OFFSET_Cells] > BMS_CELLS_QTY_MAX) break;
 				}
-				int16_t _max = 0;
-				int16_t _min = 32767;
+				int16_t _max = 0, _min = 32767;
+				uint8_t _max_cell, _min_cell;
 				bms_total_mV[read_bms_num] = 0;
 				uint16_t *p = &bms[read_bms_num][0];
 				for(uint8_t i = 0; i < read_buffer[8]; i++,p++) {
 					if(i > work.bms_cells_qty - 1) {
-						ATOMIC_BLOCK(ATOMIC_FORCEON) *p = 0;
+						/*ATOMIC_BLOCK(ATOMIC_FORCEON)*/ *p = 0;
 						continue;
 					}
 					int16_t v = read_buffer[BMS_OFFSET_CellsV_Array + i*2]*256 + read_buffer[BMS_OFFSET_CellsV_Array+1 + i*2];
+					if(v > _max) {
+						_max = v;
+						_max_cell = i;
+					}
+					if(v < _min) {
+						_min = v;
+						_min_cell = i;
+					}
 					bms_total_mV[read_bms_num] += v;
 					if(work.V_correct) {
 						v += work.V_correct;
@@ -953,13 +950,26 @@ void BMS_Serial_read(void)
 					if(work.Vmaxhyst && map_cell_full) {
 						if(v >= map_cell_full && v < map_cell_full + work.Vmaxhyst) v = map_cell_full - 1;
 					}
-					ATOMIC_BLOCK(ATOMIC_FORCEON) *p = v;
+					/*ATOMIC_BLOCK(ATOMIC_FORCEON)*/ *p = v;
 					totalV_by_cells += v;
-					if(v > _max) _max = v;
-					if(v < _min) _min = v;
 				}
-				bms_cell_max[read_bms_num] = _max;
-				bms_cell_min[read_bms_num] = _min;
+				bms_min_cell_mV[read_bms_num] = _min;
+				bms_min_string[read_bms_num] = _min_cell + 1;
+				bms_max_cell_mV[read_bms_num] = _max;			//read_buffer[BMS_OFFSET_CellsV_Array + read_buffer[BMS_OFFSET_HighV_Cell]*2]*256 + read_buffer[BMS_OFFSET_CellsV_Array+1 + read_buffer[BMS_OFFSET_HighV_Cell]*2];
+				bms_max_string[read_bms_num] = _max_cell + 1;	//read_buffer[BMS_OFFSET_HighV_Cell];
+				if(_min < work.cell_min_V) {
+					_err = ERR_BMS_Cell_Low;
+				} else if(_max > work.cell_max_V) {
+					_err = ERR_BMS_Cell_High;
+				} else if(_max - _min > work.cell_delta_max_V) {
+					_err = ERR_BMS_Cell_DeltaMax;
+				}
+				if(work.round == round_true) _max += 5;
+				else if(work.round == round_up) _max += 9;
+				i2c_cell_max[read_bms_num] = _max / 10;
+				if(work.round == round_true) _min += 5;
+				else if(work.round == round_up) _min += 9;
+				i2c_cell_min[read_bms_num] = _min / 10;
 				totalV -= totalV_by_cells;
 				if(bitRead(work.options, o_equalize_cells_V) && totalV != 0) {
 					if(debug == 3) {
@@ -1012,19 +1022,17 @@ void BMS_Serial_read(void)
 				if(map_mode == M_ON) { // discharge - select battery with min cell
 					_min = 32767;
 					for(uint8_t i = 0; i < work.bms_num; i++) {
-						if(bms_cell_min[i] && bms_cell_min[i] < _min) {
-							_min = bms_cell_min[i];
+						if(i2c_cell_min[i] && i2c_cell_min[i] < _min) {
+							_min = i2c_cell_min[i];
 							_sel = i;
 						}
 					}
-				} else { // select battery with overcharge cell
+				} else if(map_mode != M_NOT_READ) { // select battery with overcharge cell
 					_max = 0;
-					if(map_mode != M_NOT_READ) {
-						for(uint8_t i = 0; i < work.bms_num; i++) {
-							if(bms_cell_max[i] >= map_cell_full && bms_cell_max[i] > _max) {
-								_max = bms_cell_max[i];
-								_sel = i;
-							}
+					for(uint8_t i = 0; i < work.bms_num; i++) {
+						if(i2c_cell_max[i] >= map_cell_full && i2c_cell_max[i] > _max) {
+							_max = i2c_cell_max[i];
+							_sel = i;
 						}
 					}
 					if(_max == 0) {
@@ -1130,8 +1138,8 @@ void setup()
 	debug = 3;
 #endif
 	memset(bms_Q, 0, sizeof(bms_Q));
-	memset(bms_cell_min, 0, sizeof(bms_cell_min));
-	memset(bms_cell_max, 0, sizeof(bms_cell_max));
+	memset(i2c_cell_min, 0, sizeof(i2c_cell_min));
+	memset(i2c_cell_max, 0, sizeof(i2c_cell_max));
 	memset(bms_min_cell_mV, 0, sizeof(bms_min_cell_mV));
 	memset(bms_min_string, 0, sizeof(bms_min_string));
 	memset(bms_max_cell_mV, 0, sizeof(bms_max_cell_mV));
