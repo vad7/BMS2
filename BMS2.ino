@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 by Vadim Kulakov vad7@yahoo.com, vad711
+ * Copyright (c) 2026 by Vadim Kulakov vad7@yahoo.com, vad711
  *
  * This file is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public
