@@ -174,7 +174,8 @@ enum {
 
 enum { // options bits
 	o_average = 0,
-	o_equalize_cells_V = 1	// корректировать напряжения на ячейках, чтобы сумма V ячеек соответствовала TotalV
+	o_equalize_cells_V = 1,	// корректировать напряжения на ячейках, чтобы сумма V ячеек соответствовала TotalV
+	o_NO_I2C				// нет связи с инвертором МАП по I2C, вообще без связи у них лучше подкачка работает
 //	o_median = 2,
 };
 
@@ -217,7 +218,7 @@ struct _EEPROM EEMEM EEPROM = {
 	.work = {
 		.bms_num = 2,
 		.bms_cells_qty = 16,
-		.options = (0<<o_equalize_cells_V),
+		.options = (1<<o_NO_I2C) | (0<<o_equalize_cells_V),
 		.BMS_read_period = 5000,
 		.BMS_wait_answer_time = 1000,
 		.I2C_bms_rotate_period = 5,
@@ -418,10 +419,10 @@ void RWARN_check_send(void)
 
 
 
-		RWARN_quantum += RWARN_PULSE_QT;
 		if(RWARN_bit == 0) { // start pulse
 			digitalWrite(RWARN_PULSE_PIN, RWARN_PULSE_LEVEL);
 			if(RWARN_idx == 0){ // begin
+				RWARN_quantum = m;
 				rwarn_buf[0] = work.bms_num;
 				RWARN_BMS *ptr = (RWARN_BMS *) &rwarn_buf[1];
 				for(uint8_t i = 0; i < work.bms_num; i++) {
@@ -435,21 +436,24 @@ void RWARN_check_send(void)
 				}
 				*(uint16_t *)ptr = calc_crc16(rwarn_buf, RWARN_send_len = (uint8_t *)ptr - rwarn_buf, 0xFFFF);
 				RWARN_send_len += 2; // +CRC16
-			}
+			} else RWARN_quantum += RWARN_PULSE_QT;
 			RWARN_byte = rwarn_buf[RWARN_idx];
 			//DEBUG(F("RW: ")); DEBUGN(RWARN_byte);
 			RWARN_bit = 1;
-		} else if(RWARN_bit == 9) { // stop pulse
-			digitalWrite(RWARN_PULSE_PIN, !RWARN_PULSE_LEVEL);
-			if(++RWARN_idx >= RWARN_send_len){
-				RWARN_period = work.RWARN_Send_Period;
-				RWARN_idx = 0;
-			}
-			RWARN_bit = 0;
 		} else {
-			digitalWrite(RWARN_PULSE_PIN, RWARN_byte & 1 ? !RWARN_PULSE_LEVEL : RWARN_PULSE_LEVEL);
-			RWARN_byte >>= 1;
-			RWARN_bit++;
+			if(RWARN_bit == 9) { // stop pulse
+				digitalWrite(RWARN_PULSE_PIN, !RWARN_PULSE_LEVEL);
+				if(++RWARN_idx >= RWARN_send_len){
+					RWARN_period = work.RWARN_Send_Period;
+					RWARN_idx = 0;
+				}
+				RWARN_bit = 0;
+			} else {
+				digitalWrite(RWARN_PULSE_PIN, RWARN_byte & 1 ? !RWARN_PULSE_LEVEL : RWARN_PULSE_LEVEL);
+				RWARN_byte >>= 1;
+				RWARN_bit++;
+			}
+			RWARN_quantum += RWARN_PULSE_QT;
 		}
 	}
 }
@@ -495,6 +499,16 @@ void LCD_print_num_d3(int32_t num)
 void LCD_Display(void)
 {
 	if(LCD_refresh_sec) return;
+
+
+
+
+	uint32_t ttt = micros();
+
+
+
+
+
 	if(LCD_page == 0) {
 //  01234567890123456789
 //  B1: ON* 53.421V ·5
@@ -614,6 +628,15 @@ xFlashD:
 			// to do...
 		}
 	}
+
+
+
+
+	DEBUG("D:"); DEBUGN(micros() - ttt);
+
+
+
+
 }
 #endif
 
@@ -638,7 +661,7 @@ void PrintInfoToSerial(void)
 	DEBUG(F("BMS cell min, mV: ")); DEBUG(work.cell_min_V); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cell_min_V); DEBUGN(F("=NNNN)"));
 	DEBUG(F("BMS cell max, mV: ")); DEBUG(work.cell_max_V); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cell_max_V); DEBUGN(F("=NNNN)"));
 	DEBUG(F("BMS cell delta max, mV: ")); DEBUG(work.cell_delta_max_V); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_cell_delta_max_V); DEBUGN(F("=NNNN)"));
-	DEBUG(F("Options: ")); if(bitRead(work.options, o_average)) DEBUG(F("average ")); if(bitRead(work.options, o_equalize_cells_V)) DEBUG(F("equalize ")); DEBUGN("(options=+1(average),+2(equalize))");
+	DEBUG(F("Options: ")); if(bitRead(work.options, o_NO_I2C)) DEBUG(F("NO_I2C ")); if(bitRead(work.options, o_average)) DEBUG(F("average ")); if(bitRead(work.options, o_equalize_cells_V)) DEBUG(F("equalize ")); DEBUGN("(options=+1(average),+2(equalize)),+4(NO_I2C)");
 	DEBUG(F("BMS voltage round: ")); DEBUG(work.round == round_true ? F("5/4") : work.round == round_cut ? F("cut") : work.round == round_up ? F("up") : F("?"));
 	DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_round); DEBUGN(F("=0-5/4,1-cut,2-up)"));
 	DEBUG(F("BMS voltage correct, mV: ")); DEBUG(work.V_correct); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_correct); DEBUGN(F("=X)"));
