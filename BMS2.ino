@@ -818,11 +818,6 @@ const uint8_t _send2[] PROGMEM = "\xEB\x90\x01\xFF\x1E\xE4\x0F\x69\x14\x13\x02\x
 void BMS_Serial_read(void)
 {
 	if(!bitRead(flags, f_BMS_Wait_Answer) || RWARN_bit) return;
-
-
-	uint32_t ttt = micros();
-
-
 #ifdef DEBUG_BMS_SEND
 	for(uint8_t i = 0; i < sizeof(read_buffer); i++) read_buffer[i] = pgm_read_byte(read_bms_num ? &_send2[i] : &_send1[i]);
 	while(1) {
@@ -1082,12 +1077,6 @@ void BMS_Serial_read(void)
 				DEBUG(read_bms_num + 1);
 				DEBUG(F(": Wrong response code: ")); DEBUGN(read_buffer[3]);
 			}
-
-
-			DEBUG("R:"); DEBUGN(micros() - ttt);
-
-
-
 			break;
 		}
 	}
