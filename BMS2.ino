@@ -410,7 +410,15 @@ void RWARN_check_send(void)
 {
 	uint32_t m = micros();
 	if(RWARN_period == 0 && m - RWARN_quantum >= RWARN_PULSE_QT) {
-		RWARN_quantum = m;
+
+
+
+		if(m - RWARN_quantum > 3100) { DEBUG("T:"); DEBUGN(m - RWARN_quantum); }
+
+
+
+
+		RWARN_quantum += RWARN_PULSE_QT;
 		if(RWARN_bit == 0) { // start pulse
 			digitalWrite(RWARN_PULSE_PIN, RWARN_PULSE_LEVEL);
 			if(RWARN_idx == 0){ // begin
@@ -814,6 +822,11 @@ const uint8_t _send2[] PROGMEM = "\xEB\x90\x01\xFF\x1E\xE4\x0F\x69\x14\x13\x02\x
 void BMS_Serial_read(void)
 {
 	if(!bitRead(flags, f_BMS_Wait_Answer)) return;
+
+
+	uint32_t ttt = micros();
+
+
 #ifdef DEBUG_BMS_SEND
 	for(uint8_t i = 0; i < sizeof(read_buffer); i++) read_buffer[i] = pgm_read_byte(read_bms_num ? &_send2[i] : &_send1[i]);
 	while(1) {
@@ -857,13 +870,11 @@ void BMS_Serial_read(void)
 				}
 				watchdog_BMS = 0;
 			} else if(read_buffer[BMS_OFFSET_Cmd] == 0xFF) { // Request answer
-				uint8_t n = read_buffer[BMS_OFFSET_Alarm] & 0x07;
+				uint8_t n = read_buffer[BMS_OFFSET_Alarm];
 				if(n) {
-					DEBUGIF(1,F("BMS"));
-					DEBUGIF(1, read_bms_num + 1);
-					DEBUGIF(1,F(" Alarm "));
-					DEBUGIF(1,n);
-					DEBUGIF(1,F(": "));
+					if(debug >= 1) {
+						DEBUG(F("BMS")); DEBUG(read_bms_num + 1); DEBUG(F(" Alarm ")); DEBUG(n); DEBUG(F(": "));
+					}
 					if(n & (1<<0)) { // cells num wrong
 						DEBUGIF(1,F("Cells_Num "));
 						//_err = ERR_BMS_Config;
@@ -1064,6 +1075,12 @@ void BMS_Serial_read(void)
 			if(debug == 3) {
 				DEBUG(F("Sel: ")); DEBUGN(selected_bms);
 			}
+
+
+			DEBUG("R:"); DEBUGN(micros() - ttt);
+
+
+
 			break;
 		}
 	}
