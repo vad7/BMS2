@@ -411,14 +411,6 @@ void RWARN_check_send(void)
 {
 	uint32_t m = micros();
 	if(RWARN_period == 0 && m - RWARN_quantum >= RWARN_PULSE_QT) {
-
-
-
-		if(m - RWARN_quantum > 3100) { DEBUG("T:"); DEBUGN(m - RWARN_quantum); }
-
-
-
-
 		if(RWARN_bit == 0) { // start pulse
 			digitalWrite(RWARN_PULSE_PIN, RWARN_PULSE_LEVEL);
 			if(RWARN_idx == 0){ // begin
@@ -499,16 +491,6 @@ void LCD_print_num_d3(int32_t num)
 void LCD_Display(void)
 {
 	if(LCD_refresh_sec) return;
-
-
-
-
-	uint32_t ttt = micros();
-
-
-
-
-
 	if(LCD_page == 0) {
 //  01234567890123456789
 //  B1: ON* 53.421V ·5
@@ -628,15 +610,6 @@ xFlashD:
 			// to do...
 		}
 	}
-
-
-
-
-	DEBUG("D:"); DEBUGN(micros() - ttt);
-
-
-
-
 }
 #endif
 
@@ -844,7 +817,7 @@ const uint8_t _send2[] PROGMEM = "\xEB\x90\x01\xFF\x1E\xE4\x0F\x69\x14\x13\x02\x
 // JK-DZ11-B2A24S active balancer
 void BMS_Serial_read(void)
 {
-	if(!bitRead(flags, f_BMS_Wait_Answer)) return;
+	if(!bitRead(flags, f_BMS_Wait_Answer) || RWARN_bit) return;
 
 
 	uint32_t ttt = micros();
@@ -886,21 +859,22 @@ void BMS_Serial_read(void)
 				_err = ERR_BMS_Read;
 				break;
 			}
-			if(read_buffer[BMS_OFFSET_Cmd] == 0xF2) { // Change delta voltage
+			uint8_t n = read_buffer[BMS_OFFSET_Cmd];
+			if(n == 0xF2) { // Change delta voltage
 				//delta_active = read_buffer[4]*256 + read_buffer[5];
 				if(debug) {
 					DEBUG(F("New delta: ")); DEBUGN(delta_active);
 				}
 				watchdog_BMS = 0;
-			} else if(read_buffer[BMS_OFFSET_Cmd] == 0xFF) { // Request answer
-				uint8_t n = read_buffer[BMS_OFFSET_Alarm];
+			} else if(n == 0xFF) { // Request answer
+				n = read_buffer[BMS_OFFSET_Alarm] ^ 1;
 				if(n) {
-					if(debug >= 1) {
+					if(debug >= 3) {
 						DEBUG(F("BMS")); DEBUG(read_bms_num + 1); DEBUG(F(" Alarm ")); DEBUG(n); DEBUG(F(": "));
 					}
 					if(n & (1<<0)) { // cells num wrong
 						DEBUGIF(1,F("Cells_Num "));
-						//_err = ERR_BMS_Config;
+						_err = ERR_BMS_Config;
 					}
 					if(n & (1<<1)) { // wire resistance is too large
 						DEBUGIF(1,F("Wire_Resistance "));
@@ -912,14 +886,20 @@ void BMS_Serial_read(void)
 					}
 					DEBUGIF(1,'\n');
 				}
-				int16_t totalV = read_buffer[BMS_OFFSET_TotalV]*256 + read_buffer[BMS_OFFSET_TotalV + 1];
-				int16_t totalV_by_cells = 0;
 				uint16_t balance_current = read_buffer[BMS_OFFSET_BalansI]*256 + read_buffer[BMS_OFFSET_BalansI + 1];
 				bms_flags[read_bms_num] = ((balance_current > 0)<<1) | (read_buffer[BMS_OFFSET_BalansOn] == 1);
+				int16_t totalV, totalV_by_cells = 0;
+				uint16_t *p;
+				if(!bitRead(work.options, o_NO_I2C)) {
+					totalV = read_buffer[BMS_OFFSET_TotalV]*256 + read_buffer[BMS_OFFSET_TotalV + 1];
+					totalV_by_cells = 0;
+					p = &bms[read_bms_num][0];
+				}
 	#ifdef DEBUG_TO_SERIAL
 				if(debug == 3) {
 					DEBUG(F("BMS ")); DEBUG(read_bms_num + 1);	DEBUG(' ');
 					if(read_buffer[BMS_OFFSET_BalansOn]) DEBUG(F("ON")); else DEBUG(F("OFF"));
+					totalV = read_buffer[BMS_OFFSET_TotalV]*256 + read_buffer[BMS_OFFSET_TotalV + 1];
 					DEBUG(F(",V:")); DEBUG(totalV / 100); DEBUG('.'); if(totalV % 100 < 10) DEBUG('0'); DEBUG(totalV % 100);
 					DEBUG(F(",D(mV):")); DEBUG(bms_max_cell_mV[read_bms_num] - bms_min_cell_mV[read_bms_num]);
 					DEBUG(F(",Trg(mV):")); DEBUG(read_buffer[BMS_OFFSET_TriggerV]*256 + read_buffer[BMS_OFFSET_TriggerV + 1]);
@@ -937,8 +917,7 @@ void BMS_Serial_read(void)
 				}
 				int16_t _max = 0, _min = 32767;
 				uint8_t _max_cell, _min_cell;
-				bms_total_mV[read_bms_num] = 0;
-				uint16_t *p = &bms[read_bms_num][0];
+				int32_t _total_mV = 0;
 				for(uint8_t i = 0; i < read_buffer[8]; i++,p++) {
 					if(i > work.bms_cells_qty - 1) {
 						/*ATOMIC_BLOCK(ATOMIC_FORCEON)*/ *p = 0;
@@ -953,40 +932,43 @@ void BMS_Serial_read(void)
 						_min = v;
 						_min_cell = i;
 					}
-					bms_total_mV[read_bms_num] += v;
+					_total_mV += v;
 					if(work.V_correct) {
 						v += work.V_correct;
 						if(v < 0) v = 0;
 					}
-//					if(bitRead(work.options, o_median)) {
-//						// Медианный фильтр
-//						static int16_t median1[BMS_QTY_MAX], median2[BMS_QTY_MAX];
-//						if(median1[i] == 0) median1[i] = median2[i] = v;
-//						int16_t median3 = v;
-//						if(median1[i] <= median2[i] && median1[i] <= median3) {
-//							v = median2[i] <= median3 ? median2[i] : median3;
-//						} else if(median2[i] <= median1[i] && median2[i] <= median3) {
-//							v = median1[i] <= median3 ? median1[i] : median3;
-//						} else {
-//							v = median1[i] <= median2[i] ? median1[i] : median2[i];
-//						}
-//						median1[i] = median2[i];
-//						median2[i] = median3[i];
-//						//
-//					}
-					if(bitRead(work.options, o_average)) {
-						if(bms_avg[read_bms_num][i]) v = (bms_avg[read_bms_num][i] + v) / 2;
-						bms_avg[read_bms_num][i] = v;
+					if(!bitRead(work.options, o_NO_I2C)) {
+	//					if(bitRead(work.options, o_median)) {
+	//						// Медианный фильтр
+	//						static int16_t median1[BMS_QTY_MAX], median2[BMS_QTY_MAX];
+	//						if(median1[i] == 0) median1[i] = median2[i] = v;
+	//						int16_t median3 = v;
+	//						if(median1[i] <= median2[i] && median1[i] <= median3) {
+	//							v = median2[i] <= median3 ? median2[i] : median3;
+	//						} else if(median2[i] <= median1[i] && median2[i] <= median3) {
+	//							v = median1[i] <= median3 ? median1[i] : median3;
+	//						} else {
+	//							v = median1[i] <= median2[i] ? median1[i] : median2[i];
+	//						}
+	//						median1[i] = median2[i];
+	//						median2[i] = median3[i];
+	//						//
+	//					}
+						if(bitRead(work.options, o_average)) {
+							if(bms_avg[read_bms_num][i]) v = (bms_avg[read_bms_num][i] + v) / 2;
+							bms_avg[read_bms_num][i] = v;
+						}
+						if(work.round == round_true) v += 5;
+						else if(work.round == round_up) v += 9;
+						v /= 10; // 0.001 -> 0.01
+						if(work.Vmaxhyst && map_cell_full) {
+							if(v >= map_cell_full && v < map_cell_full + work.Vmaxhyst) v = map_cell_full - 1;
+						}
+						/*ATOMIC_BLOCK(ATOMIC_FORCEON)*/ *p = v;
+						totalV_by_cells += v;
 					}
-					if(work.round == round_true) v += 5;
-					else if(work.round == round_up) v += 9;
-					v /= 10; // 0.001 -> 0.01
-					if(work.Vmaxhyst && map_cell_full) {
-						if(v >= map_cell_full && v < map_cell_full + work.Vmaxhyst) v = map_cell_full - 1;
-					}
-					/*ATOMIC_BLOCK(ATOMIC_FORCEON)*/ *p = v;
-					totalV_by_cells += v;
 				}
+				bms_total_mV[read_bms_num] = _total_mV;
 				bms_min_cell_mV[read_bms_num] = _min;
 				bms_min_string[read_bms_num] = _min_cell + 1;
 				bms_max_cell_mV[read_bms_num] = _max;			//read_buffer[BMS_OFFSET_CellsV_Array + read_buffer[BMS_OFFSET_HighV_Cell]*2]*256 + read_buffer[BMS_OFFSET_CellsV_Array+1 + read_buffer[BMS_OFFSET_HighV_Cell]*2];
@@ -998,94 +980,99 @@ void BMS_Serial_read(void)
 				} else if(_max - _min > work.cell_delta_max_V) {
 					_err = ERR_BMS_Cell_DeltaMax;
 				}
-				if(work.round == round_true) _max += 5;
-				else if(work.round == round_up) _max += 9;
-				i2c_cell_max[read_bms_num] = _max / 10;
-				if(work.round == round_true) _min += 5;
-				else if(work.round == round_up) _min += 9;
-				i2c_cell_min[read_bms_num] = _min / 10;
-				totalV -= totalV_by_cells;
-				if(bitRead(work.options, o_equalize_cells_V) && totalV != 0) {
-					if(debug == 3) {
-						DEBUG(F("BMS V="));
-						for(uint8_t i = 0; i < work.bms_cells_qty; i++) { DEBUG(bms[read_bms_num][i]); DEBUG(F(" ")); }
-						DEBUG(F("\nTotalV diff ")); DEBUG(totalV); DEBUG(": ");
-					}
-					bool allow = false;
-					int8_t d = totalV > 0 ? 1 : -1;
-					while(totalV != 0) {
-						uint16_t *p = &bms[read_bms_num][0];
-						bool edge_skip = true;
-						for(uint8_t i = 0; i < read_buffer[8]; i++,p++) {
-							int16_t tmp = *p;
-							if(d == 1) {
-								if(edge_skip && tmp == _min) {
-									edge_skip = false;
-									continue;
+				if(!bitRead(work.options, o_NO_I2C)) {
+					if(work.round == round_true) _max += 5;
+					else if(work.round == round_up) _max += 9;
+					i2c_cell_max[read_bms_num] = _max / 10;
+					if(work.round == round_true) _min += 5;
+					else if(work.round == round_up) _min += 9;
+					i2c_cell_min[read_bms_num] = _min / 10;
+					totalV -= totalV_by_cells;
+					if(bitRead(work.options, o_equalize_cells_V) && totalV != 0) {
+						if(debug == 3) {
+							DEBUG(F("BMS V="));
+							for(uint8_t i = 0; i < work.bms_cells_qty; i++) { DEBUG(bms[read_bms_num][i]); DEBUG(F(" ")); }
+							DEBUG(F("\nTotalV diff ")); DEBUG(totalV); DEBUG(": ");
+						}
+						bool allow = false;
+						int8_t d = totalV > 0 ? 1 : -1;
+						while(totalV != 0) {
+							uint16_t *p = &bms[read_bms_num][0];
+							bool edge_skip = true;
+							for(uint8_t i = 0; i < read_buffer[8]; i++,p++) {
+								int16_t tmp = *p;
+								if(d == 1) {
+									if(edge_skip && tmp == _min) {
+										edge_skip = false;
+										continue;
+									}
+									tmp++;
+									if(allow || tmp <= _max) {
+										ATOMIC_BLOCK(ATOMIC_FORCEON) *p = tmp;
+										totalV -= d;
+										if(debug == 3) { DEBUG(i); DEBUG(' '); }
+									}
+								} else { // d == -1
+									if(edge_skip && tmp == _max) {
+										edge_skip = false;
+										continue;
+									}
+									tmp--;
+									if(allow || tmp >= _min) {
+										ATOMIC_BLOCK(ATOMIC_FORCEON) *p = tmp;
+										totalV -= d;
+										if(debug == 3) { DEBUG(i); DEBUG(' '); }
+									}
 								}
-								tmp++;
-								if(allow || tmp <= _max) {
-									ATOMIC_BLOCK(ATOMIC_FORCEON) *p = tmp;
-									totalV -= d;
-									if(debug == 3) { DEBUG(i); DEBUG(' '); }
-								}
-							} else { // d == -1
-								if(edge_skip && tmp == _max) {
-									edge_skip = false;
-									continue;
-								}
-								tmp--;
-								if(allow || tmp >= _min) {
-									ATOMIC_BLOCK(ATOMIC_FORCEON) *p = tmp;
-									totalV -= d;
-									if(debug == 3) { DEBUG(i); DEBUG(' '); }
-								}
+								if(totalV == 0) break;
 							}
-							if(totalV == 0) break;
+							if(debug == 3 && totalV) DEBUG(" * ");
+							allow = true;
 						}
-						if(debug == 3 && totalV) DEBUG(" * ");
-						allow = true;
+						if(debug == 3) {
+							DEBUG(F("\nBMS V="));
+							for(uint8_t i = 0; i < work.bms_cells_qty; i++) { DEBUG(bms[read_bms_num][i]); DEBUG(F(" ")); }
+							DEBUG('\n');
+						}
 					}
+					uint8_t _sel = 0xFF;
+					if(map_mode == M_ON) { // discharge - select battery with min cell
+						_min = 32767;
+						for(uint8_t i = 0; i < work.bms_num; i++) {
+							if(i2c_cell_min[i] && i2c_cell_min[i] < _min) {
+								_min = i2c_cell_min[i];
+								_sel = i;
+							}
+						}
+					} else if(map_mode != M_NOT_READ) { // select battery with overcharge cell
+						_max = 0;
+						for(uint8_t i = 0; i < work.bms_num; i++) {
+							if(i2c_cell_max[i] >= map_cell_full && i2c_cell_max[i] > _max) {
+								_max = i2c_cell_max[i];
+								_sel = i;
+							}
+						}
+						if(_max == 0) {
+							if(I2C_bms_send_switch_timer) I2C_bms_send_switch_timer--;
+							else {
+								I2C_bms_send_switch_timer = work.I2C_bms_rotate_period;
+								if(++selected_bms == work.bms_num) selected_bms = 0;
+							}
+						} else selected_bms = _sel;
+					}
+					selected_bms = _sel;
+					if(read_bms_num == 0) memset(bms_Q, 0, sizeof(bms_Q));
+					uint8_t i = read_buffer[BMS_OFFSET_HighV_Cell];
+					if(i < work.bms_cells_qty && read_buffer[BMS_OFFSET_BalansDir]) bms_Q[i] = 100UL * (read_buffer[BMS_OFFSET_BalansI]*256 + read_buffer[BMS_OFFSET_BalansI+1]) / (read_buffer[BMS_OFFSET_CellsV_Array + i*2]*256 + read_buffer[BMS_OFFSET_CellsV_Array+1 + i*2]); // Q_Cell=100*I/(Ucell/R), R=1
+					if(!bitRead(flags, f_BMS_Ready)) i2c_set_slave_addr(bms_idx + 1);
+					temp = read_buffer[BMS_OFFSET_Temperature + 1] + BMS_Temperature_Correct + work.temp_correct;
 					if(debug == 3) {
-						DEBUG(F("\nBMS V="));
-						for(uint8_t i = 0; i < work.bms_cells_qty; i++) { DEBUG(bms[read_bms_num][i]); DEBUG(F(" ")); }
-						DEBUG('\n');
+						DEBUG(F("Sel: ")); DEBUGN(selected_bms);
 					}
 				}
-				uint8_t _sel = 0xFF;
-				if(map_mode == M_ON) { // discharge - select battery with min cell
-					_min = 32767;
-					for(uint8_t i = 0; i < work.bms_num; i++) {
-						if(i2c_cell_min[i] && i2c_cell_min[i] < _min) {
-							_min = i2c_cell_min[i];
-							_sel = i;
-						}
-					}
-				} else if(map_mode != M_NOT_READ) { // select battery with overcharge cell
-					_max = 0;
-					for(uint8_t i = 0; i < work.bms_num; i++) {
-						if(i2c_cell_max[i] >= map_cell_full && i2c_cell_max[i] > _max) {
-							_max = i2c_cell_max[i];
-							_sel = i;
-						}
-					}
-					if(_max == 0) {
-						if(I2C_bms_send_switch_timer) I2C_bms_send_switch_timer--;
-						else {
-							I2C_bms_send_switch_timer = work.I2C_bms_rotate_period;
-							if(++selected_bms == work.bms_num) selected_bms = 0;
-						}
-					} else selected_bms = _sel;
-				}
-				selected_bms = _sel;
 
-				temp = read_buffer[BMS_OFFSET_Temperature + 1] + BMS_Temperature_Correct + work.temp_correct;
 				delta_active = read_buffer[BMS_OFFSET_TriggerV]*256 + read_buffer[BMS_OFFSET_TriggerV + 1];
-				if(read_bms_num == 0) memset(bms_Q, 0, sizeof(bms_Q));
-				uint8_t i = read_buffer[BMS_OFFSET_HighV_Cell];
-				if(i < work.bms_cells_qty && read_buffer[BMS_OFFSET_BalansDir]) bms_Q[i] = 100UL * (read_buffer[BMS_OFFSET_BalansI]*256 + read_buffer[BMS_OFFSET_BalansI+1]) / (read_buffer[BMS_OFFSET_CellsV_Array + i*2]*256 + read_buffer[BMS_OFFSET_CellsV_Array+1 + i*2]); // Q_Cell=100*I/(Ucell/R), R=1
 				if(!bitRead(flags, f_BMS_Ready)) {
-					i2c_set_slave_addr(bms_idx + 1);
 					bitSet(flags, f_BMS_Ready);
 					bms_loop_time = millis();
 				}
@@ -1094,9 +1081,6 @@ void BMS_Serial_read(void)
 				DEBUG(F("BMS"));
 				DEBUG(read_bms_num + 1);
 				DEBUG(F(": Wrong response code: ")); DEBUGN(read_buffer[3]);
-			}
-			if(debug == 3) {
-				DEBUG(F("Sel: ")); DEBUGN(selected_bms);
 			}
 
 
