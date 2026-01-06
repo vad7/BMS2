@@ -410,58 +410,55 @@ void I2C_Receive(int howMany) {
 void RWARN_check_send(void)
 {
 	if(RWARN_period == 0) {
-		if(RWARN_bit == 0) { // start pulse
-			RWARN_quantum = micros();
+		uint16_t m = micros();
+		if(m - RWARN_quantum >= RWARN_PULSE_QT) {
+			RWARN_quantum = m;
+			if(RWARN_bit == 0) { // start pulse
 #if RWARN_PULSE_LEVEL == 0
-			RWARN_PULSE_PORT &= ~RWARN_PULSE_PORT_MASK;
+				RWARN_PULSE_PORT &= ~RWARN_PULSE_PORT_MASK;
 #else
-			RWARN_PULSE_PORT |= RWARN_PULSE_PORT_MASK;
+				RWARN_PULSE_PORT |= RWARN_PULSE_PORT_MASK;
 #endif
-//			digitalWrite(RWARN_PULSE_PIN, RWARN_PULSE_LEVEL);
-			if(RWARN_idx == 0){ // begin
-				rwarn_buf[0] = work.bms_num;
-				RWARN_BMS *ptr = (RWARN_BMS *) &rwarn_buf[1];
-				for(uint8_t i = 0; i < work.bms_num; i++) {
-					ptr->last_status = (bms_flags[i]<<6) | last_error[i];
-					ptr->bms_min_string = bms_min_string[i];
-					ptr->bms_max_string = bms_max_string[i];
-					ptr->bms_min_cell_mV = bms_min_cell_mV[i];
-					ptr->bms_max_cell_mV = bms_max_cell_mV[i];
-					ptr->bms_total_mV = bms_total_mV[i];
-					ptr++;
+//				digitalWrite(RWARN_PULSE_PIN, RWARN_PULSE_LEVEL);
+				if(RWARN_idx == 0){ // begin
+					rwarn_buf[0] = work.bms_num;
+					RWARN_BMS *ptr = (RWARN_BMS *) &rwarn_buf[1];
+					for(uint8_t i = 0; i < work.bms_num; i++) {
+						ptr->last_status = (bms_flags[i]<<6) | last_error[i];
+						ptr->bms_min_string = bms_min_string[i];
+						ptr->bms_max_string = bms_max_string[i];
+						ptr->bms_min_cell_mV = bms_min_cell_mV[i];
+						ptr->bms_max_cell_mV = bms_max_cell_mV[i];
+						ptr->bms_total_mV = bms_total_mV[i];
+						ptr++;
+					}
+					*(uint16_t *)ptr = calc_crc16(rwarn_buf, RWARN_send_len = (uint8_t *)ptr - rwarn_buf, 0xFFFF);
+					RWARN_send_len += 2; // +CRC16
 				}
-				*(uint16_t *)ptr = calc_crc16(rwarn_buf, RWARN_send_len = (uint8_t *)ptr - rwarn_buf, 0xFFFF);
-				RWARN_send_len += 2; // +CRC16
-			}
-			RWARN_byte = rwarn_buf[RWARN_idx];
-			//DEBUG(F("RW: ")); DEBUGN(RWARN_byte);
-			RWARN_bit = 1;
-		} else {
-			uint16_t m = micros();
-			if(m - RWARN_quantum >= RWARN_PULSE_QT) {
-				if(RWARN_bit == 9) { // stop pulse
+				RWARN_byte = rwarn_buf[RWARN_idx];
+				//DEBUG(F("RW: ")); DEBUGN(RWARN_byte);
+				RWARN_bit = 1;
+			} else if(RWARN_bit == 9) { // stop pulse
 #if RWARN_PULSE_LEVEL == 0
+				RWARN_PULSE_PORT |= RWARN_PULSE_PORT_MASK;
+#else
+				RWARN_PULSE_PORT &= ~RWARN_PULSE_PORT_MASK;
+#endif
+//				digitalWrite(RWARN_PULSE_PIN, !RWARN_PULSE_LEVEL);
+				if(++RWARN_idx >= RWARN_send_len){
+					RWARN_period = work.RWARN_Send_Period;
+					RWARN_idx = 0;
+				}
+				RWARN_bit = 0;
+			} else {
+				if(RWARN_byte & 1 ? !RWARN_PULSE_LEVEL : RWARN_PULSE_LEVEL) {
 					RWARN_PULSE_PORT |= RWARN_PULSE_PORT_MASK;
-#else
-					RWARN_PULSE_PORT &= ~RWARN_PULSE_PORT_MASK;
-#endif
-//					digitalWrite(RWARN_PULSE_PIN, !RWARN_PULSE_LEVEL);
-					if(++RWARN_idx >= RWARN_send_len){
-						RWARN_period = work.RWARN_Send_Period;
-						RWARN_idx = 0;
-					}
-					RWARN_bit = 0;
 				} else {
-					if(RWARN_byte & 1 ? !RWARN_PULSE_LEVEL : RWARN_PULSE_LEVEL) {
-						RWARN_PULSE_PORT |= RWARN_PULSE_PORT_MASK;
-					} else {
-						RWARN_PULSE_PORT &= ~RWARN_PULSE_PORT_MASK;
-					}
-//					digitalWrite(RWARN_PULSE_PIN, RWARN_byte & 1 ? !RWARN_PULSE_LEVEL : RWARN_PULSE_LEVEL);
-					RWARN_byte >>= 1;
-					RWARN_bit++;
+					RWARN_PULSE_PORT &= ~RWARN_PULSE_PORT_MASK;
 				}
-				RWARN_quantum = m;
+//				digitalWrite(RWARN_PULSE_PIN, RWARN_byte & 1 ? !RWARN_PULSE_LEVEL : RWARN_PULSE_LEVEL);
+				RWARN_byte >>= 1;
+				RWARN_bit++;
 			}
 		}
 	}
