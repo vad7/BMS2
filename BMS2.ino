@@ -1318,7 +1318,7 @@ void loop()
 			}
 			if(bms_read_pause) bms_read_pause--;
 		} else if(debugmode != 1 && (flags & (_BV(f_BMS_Wait_Answer) | _BV(f_BMS_Need_Read)))) {
-			if(bitRead(flags, f_BMS_Wait_Answer)) BMS_Serial_read();
+			if(bitRead(flags, f_BMS_Wait_Answer) && RWARN_idx == 0) BMS_Serial_read();
 			if(bms_read_pause == 0) {
 				if(bitRead(flags, f_BMS_Wait_Answer)) {
 					if(!bitRead(flags, f_BMS_Read_Finish)) {
