@@ -70,22 +70,22 @@ LiquidCrystal lcd( 2,  3,  4,  5,  6,  7);	// LCD 20x4
 #define LCD_ERR_DISPLAY_TIME		10	// sec
 #endif
 //
-#define OUT_CELL_UNDER_V			16	// A2, active LOW
-#define OUT_CELL_OVER_V				17	// A3, active LOW, OUT_CELL_UNDER_V+OUT_CELL_OVER_V = BMS ERROR
-#define RWARN_PULSE_PIN				13
-#define RWARN_PULSE_LEVEL			1	// UART active level
-#define RWARN_PULSE_QT				3000// microsec, bit length
-#define RWARN_PULSE_HIGH_LEN		25	// *1msec
-#define RWARN_PULSE_LOW_LEN			25	// *1msec
-#define RWARN_PULSE_END_LOW_LEN		40	// *1msec
+#define OUT_CELL_UNDER_V			16			// A2, active LOW
+#define OUT_CELL_OVER_V				17			// A3, active LOW, OUT_CELL_UNDER_V+OUT_CELL_OVER_V = BMS ERROR
+#define RWARN_PULSE_PIN				13			// PIN_PB5
+#define RWARN_PULSE_PORT			PORTB		// PIN_PB5
+#define RWARN_PULSE_PORT_MASK		(1<<PORTB5) // PIN_PB5
 
-#define I2C_FREQ					2500
+#define RWARN_PULSE_LEVEL			1		// UART active level
+#define RWARN_PULSE_QT				3000	// microsec, bit length
+
 #define BMS_NUM_MAX					2		// max number of connected BMS
 #define BMS_CELLS_QTY_MAX			24
-#define WATCHDOG_NO_CONN			30UL	// sec
+#define WATCHDOG_NO_CONN			30		// sec
+#define I2C_FREQ					2500
 #define MAIN_LOOP_PERIOD			1		// msec, not less than this, actually +848 us
 #define BMS_NO_TEMP					255
-#define BMS_MIN_PAUSE_BETWEEN_READS	150UL	// msec, defaults
+#define BMS_MIN_PAUSE_BETWEEN_READS	15		// *100ms
 #define BMS_CHANGE_DELTA_PAUSE_MIN  1800	// sec
 #define BMS_CHANGE_DELTA_EQUALIZER  60		// attempts (* ~1 sec)
 #define BMS_CHANGE_DELTA_DISCHARGE  30		// sec, When I2C_MAP_MODE = M_ON balance delta => BalansDelta[max]
@@ -192,8 +192,8 @@ struct WORK {
 	uint8_t  bms_num;
 	uint8_t  bms_cells_qty;
 	uint8_t  options;
-	uint32_t BMS_read_period;		// ms, 1 - synch i2C
-	uint32_t BMS_wait_answer_time;	// ms
+	uint8_t  BMS_read_period;		// *100ms
+	uint8_t  BMS_wait_answer_time;	// *100ms
 	uint8_t  I2C_bms_rotate_period; // times, period (number of reading) before switch to next bms
 	uint8_t  round;					// round_*
 	int16_t  V_correct;				// mV
@@ -219,8 +219,8 @@ struct _EEPROM EEMEM EEPROM = {
 		.bms_num = 2,
 		.bms_cells_qty = 16,
 		.options = (1<<o_NO_I2C) | (0<<o_equalize_cells_V),
-		.BMS_read_period = 5000,
-		.BMS_wait_answer_time = 1000,
+		.BMS_read_period = 50,
+		.BMS_wait_answer_time = 5,
 		.I2C_bms_rotate_period = 5,
 		.round = round_cut,
 		.V_correct = 0,
@@ -269,7 +269,7 @@ uint8_t  RWARN_idx = 0;
 uint8_t  RWARN_send_len;
 uint8_t  RWARN_bit = 0;
 uint8_t  RWARN_byte;
-uint32_t RWARN_quantum = 0;
+uint16_t RWARN_quantum = 0;
 
 uint8_t  flags = (1<<f_BMS_Need_Read);	// f_*
 int8_t   debug = 0;					// 0 - off, 1 - on, 2 - detailed dump, 3 - full dump, 4 - BMS full
@@ -280,14 +280,14 @@ uint8_t  bms_select = 0;
 uint8_t  bms_Q[BMS_CELLS_QTY_MAX];// %
 uint8_t  bms_idx = 0;
 uint8_t  bms_idx_prev = 0;
-uint32_t bms_loop_time;
+uint16_t bms_loop_time;
 uint8_t  bms_flags[BMS_NUM_MAX];		// b1 - balance current > 0, b0 - on/off
 int16_t  bms_min_cell_mV[BMS_NUM_MAX];	// *1mV
 uint8_t  bms_min_string[BMS_NUM_MAX];
 int16_t  bms_max_cell_mV[BMS_NUM_MAX];	// *1mV
 uint8_t  bms_max_string[BMS_NUM_MAX];
 int32_t  bms_total_mV[BMS_NUM_MAX];		// *1mV
-uint32_t sec_timer = 0;
+uint16_t sec_timer = 0;
 uint8_t  watchdog_I2C = 0;
 uint8_t  watchdog_BMS = 0;
 uint8_t  I2C_bms_send_switch_timer = 0;
@@ -308,10 +308,10 @@ uint8_t  error_new = 0;
 uint8_t  error_send = 0;
 uint8_t  read_buffer[74];
 int8_t   read_idx = 0;
-uint32_t bms_reading = 0;
+uint8_t  bms_reading = 0;			// 100ms
+uint8_t  bms_read_pause = 0;		// 100ms
 uint8_t  i2c_receive[32];
 uint8_t  i2c_receive_idx = 0;
-uint32_t bms_last_read_time = 0;
 uint16_t delta_active = 0;			// mV
 uint16_t delta_new = 0;				// mV
 uint16_t delta_next = 0;
@@ -409,12 +409,16 @@ void I2C_Receive(int howMany) {
 
 void RWARN_check_send(void)
 {
-	uint32_t m = micros();
-	if(RWARN_period == 0 && m - RWARN_quantum >= RWARN_PULSE_QT) {
+	if(RWARN_period == 0) {
 		if(RWARN_bit == 0) { // start pulse
-			digitalWrite(RWARN_PULSE_PIN, RWARN_PULSE_LEVEL);
+			RWARN_quantum = micros();
+#if RWARN_PULSE_LEVEL == 0
+			RWARN_PULSE_PORT &= ~RWARN_PULSE_PORT_MASK;
+#else
+			RWARN_PULSE_PORT |= RWARN_PULSE_PORT_MASK;
+#endif
+//			digitalWrite(RWARN_PULSE_PIN, RWARN_PULSE_LEVEL);
 			if(RWARN_idx == 0){ // begin
-				RWARN_quantum = m;
 				rwarn_buf[0] = work.bms_num;
 				RWARN_BMS *ptr = (RWARN_BMS *) &rwarn_buf[1];
 				for(uint8_t i = 0; i < work.bms_num; i++) {
@@ -428,24 +432,37 @@ void RWARN_check_send(void)
 				}
 				*(uint16_t *)ptr = calc_crc16(rwarn_buf, RWARN_send_len = (uint8_t *)ptr - rwarn_buf, 0xFFFF);
 				RWARN_send_len += 2; // +CRC16
-			} else RWARN_quantum += RWARN_PULSE_QT;
+			}
 			RWARN_byte = rwarn_buf[RWARN_idx];
 			//DEBUG(F("RW: ")); DEBUGN(RWARN_byte);
 			RWARN_bit = 1;
 		} else {
-			if(RWARN_bit == 9) { // stop pulse
-				digitalWrite(RWARN_PULSE_PIN, !RWARN_PULSE_LEVEL);
-				if(++RWARN_idx >= RWARN_send_len){
-					RWARN_period = work.RWARN_Send_Period;
-					RWARN_idx = 0;
+			uint16_t m = micros();
+			if(m - RWARN_quantum >= RWARN_PULSE_QT) {
+				if(RWARN_bit == 9) { // stop pulse
+#if RWARN_PULSE_LEVEL == 0
+					RWARN_PULSE_PORT |= RWARN_PULSE_PORT_MASK;
+#else
+					RWARN_PULSE_PORT &= ~RWARN_PULSE_PORT_MASK;
+#endif
+//					digitalWrite(RWARN_PULSE_PIN, !RWARN_PULSE_LEVEL);
+					if(++RWARN_idx >= RWARN_send_len){
+						RWARN_period = work.RWARN_Send_Period;
+						RWARN_idx = 0;
+					}
+					RWARN_bit = 0;
+				} else {
+					if(RWARN_byte & 1 ? !RWARN_PULSE_LEVEL : RWARN_PULSE_LEVEL) {
+						RWARN_PULSE_PORT |= RWARN_PULSE_PORT_MASK;
+					} else {
+						RWARN_PULSE_PORT &= ~RWARN_PULSE_PORT_MASK;
+					}
+//					digitalWrite(RWARN_PULSE_PIN, RWARN_byte & 1 ? !RWARN_PULSE_LEVEL : RWARN_PULSE_LEVEL);
+					RWARN_byte >>= 1;
+					RWARN_bit++;
 				}
-				RWARN_bit = 0;
-			} else {
-				digitalWrite(RWARN_PULSE_PIN, RWARN_byte & 1 ? !RWARN_PULSE_LEVEL : RWARN_PULSE_LEVEL);
-				RWARN_byte >>= 1;
-				RWARN_bit++;
+				RWARN_quantum = m;
 			}
-			RWARN_quantum += RWARN_PULSE_QT;
 		}
 	}
 }
@@ -817,7 +834,6 @@ const uint8_t _send2[] PROGMEM = "\xEB\x90\x01\xFF\x1E\xE4\x0F\x69\x14\x13\x02\x
 // JK-DZ11-B2A24S active balancer
 void BMS_Serial_read(void)
 {
-	if(!bitRead(flags, f_BMS_Wait_Answer) || RWARN_bit) return;
 #ifdef DEBUG_BMS_SEND
 	for(uint8_t i = 0; i < sizeof(read_buffer); i++) read_buffer[i] = pgm_read_byte(read_bms_num ? &_send2[i] : &_send1[i]);
 	while(1) {
@@ -831,6 +847,7 @@ void BMS_Serial_read(void)
 		if(read_idx == sizeof(read_buffer)) {
 #endif
 			bitSet(flags, f_BMS_Read_Finish);
+			bms_read_pause = BMS_MIN_PAUSE_BETWEEN_READS;
 			_err = ERR_BMS_Ok;
 			read_idx = 0;
 			if(read_buffer[0] != 0xEB || read_buffer[1] != 0x90) {
@@ -1194,262 +1211,261 @@ void setup()
 
 void loop()
 {
-	static uint32_t led_flashing, cnt100ms;
+	static uint16_t led_flashing, cnt100ms;
 	wdt_reset();
 	RWARN_check_send();
-	uint8_t _err;
-	for(uint8_t i = 0; i < BMS_NUM_MAX; i++) {
-		if((_err = last_error[i])) break;
-	}
-	uint32_t m = millis();
-#ifdef LCD_ENABLED
-	if(_err) {
-		if(m - led_flashing >= 300UL) {
-			led_flashing = m;
-			*portOutputRegister(digitalPinToPort(LED_PD)) ^= digitalPinToBitMask(LED_PD);
-		}
-	} else *portOutputRegister(digitalPinToPort(LED_PD)) &= ~digitalPinToBitMask(LED_PD);
-#else
-	if(m - led_flashing >= (error_alarm_time == 0 ? 1500UL : 200UL)) {
-		led_flashing = m;
-		if(error_alarm_time) error_alarm_time--;
-		if(debugmode) *portOutputRegister(digitalPinToPort(LED_PD)) |= digitalPinToBitMask(LED_PD);
-		else *portOutputRegister(digitalPinToPort(LED_PD)) ^= digitalPinToBitMask(LED_PD);
-	}
-#endif
 	if(!(*key1_PIN & key1_MASK)) { // pressed
 		key1_delay = 150;
 	} else if(key1_delay) key1_delay--;
-	if(m - cnt100ms >= 100UL) { // 0.1 sec
-		cnt100ms = m;
-		if(key1_status == 1) {
-			// to do...
-			if(debugmode) DEBUGN("Key pressed");
-			//
-			key1_status = 0;
-		}
-		uint8_t d  = !(*portInputRegister(digitalPinToPort(DEBUG_ACTIVE_PD)) & digitalPinToBitMask(DEBUG_ACTIVE_PD));
-#if defined(__AVR_ATmega328PB__)
-		d <<= 1;
-#endif
-		if(d != debugmode) {
-			if(*portOutputRegister(digitalPinToPort(BUZZER_PD1)) & digitalPinToBitMask(BUZZER_PD1)) {
-				*portOutputRegister(digitalPinToPort(BUZZER_PD1)) &= ~(digitalPinToBitMask(BUZZER_PD1)|digitalPinToBitMask(BUZZER_PD2)|digitalPinToBitMask(BUZZER_PD3));
-				beep_time = BEEP_DURATION;
-			} else beep_time = 0;
-			beep_cnt = 0;
-			beep_num = 255;	// short beep
-#ifdef LCD_ENABLED
-			LCD_SCR_last = LCD_SCR_REFRESH_NOW; // refresh screen
-			LCD_refresh_sec = 0;
-#endif
-		}
-		debugmode = d;
-		if((_err && !debugmode) || beep_cnt || beep_num) {
-			if(beep_time) beep_time--;
-			else {
-				if(beep_cnt) {
-					if(--beep_cnt) {
-						*portOutputRegister(digitalPinToPort(BUZZER_PD1)) ^= digitalPinToBitMask(BUZZER_PD1)|digitalPinToBitMask(BUZZER_PD2)|digitalPinToBitMask(BUZZER_PD3);
-						beep_time = BEEP_DURATION;
-					} else {
-						*portOutputRegister(digitalPinToPort(BUZZER_PD1)) &= ~(digitalPinToBitMask(BUZZER_PD1)|digitalPinToBitMask(BUZZER_PD2)|digitalPinToBitMask(BUZZER_PD3));
-						beep_time = BEEP_PAUSE;
-					}
-				} else {
-					if(_err && _err != beep_num) beep_num = _err;
-					if(beep_num) {
-						if(beep_num == 255) {
-							*portOutputRegister(digitalPinToPort(BUZZER_PD1)) |= digitalPinToBitMask(BUZZER_PD1)|digitalPinToBitMask(BUZZER_PD2)|digitalPinToBitMask(BUZZER_PD3);
-							beep_cnt = 1;
-							beep_time = 0;
-						} else {
-							beep_cnt = beep_num * 2;
-							beep_time = BEEP_DURATION;
-						}
-						beep_num = 0;
-					}
-				}
-			}
-		}
-	}
-	if(m - sec_timer >= 1000UL) { // every 1 sec
-		sec_timer = m;
-		if(work.watchdog & 1) watchdog_I2C++;
-		if(work.watchdog & 2) watchdog_BMS++;
-		if(watchdog_I2C > WATCHDOG_NO_CONN || watchdog_BMS > WATCHDOG_NO_CONN) {
-			Wire.end();
-			if(debugmode) {
-				DEBUG(F("* WATCHDOG: ")); DEBUG(watchdog_I2C); DEBUG(','); DEBUGN(watchdog_BMS);
-				watchdog_BMS = watchdog_I2C = 0;
-			} else while(1) { // reboot
-				*portOutputRegister(digitalPinToPort(LED_PD)) ^= digitalPinToBitMask(LED_PD);
-				_delay_ms(100);
-			}
-		}
-		if(delta_change_pause < 0xFFFF) delta_change_pause++;
-		if(RWARN_period) RWARN_period--;
-#ifdef DEBUG_TO_SERIAL
-		DebugSerial_read();
-#endif
-#ifdef LCD_ENABLED
-		if(LCD_refresh_sec) LCD_refresh_sec--;
-		for(uint8_t i = 0; i < BMS_NUM_MAX; i++) {
-			if(LCD_last_error_timeout[i] && --LCD_last_error_timeout[i] == 0) LCD_last_error[i] = 0;
-//			if((LCD_last_error[i] = last_error[i])) LCD_last_error_timeout[i] = LCD_ERR_DISPLAY_TIME;
-		}
-#endif
-	}
-
-	if(bms_idx_prev != bms_idx) {
-		if(bms_idx == 0) {
-			flags = f_BMS_Need_Read;
-#ifdef DEBUG_TO_SERIAL
-			if(debugmode && debug >= 2) {
-				DEBUG(F("I2C ms: "));
-				DEBUGN(m - bms_loop_time);
-				bms_loop_time = m;
-			}
-#endif
-		}
-#ifdef DEBUG_TO_SERIAL
-		if(debugmode && debug >= 4) {
-			DEBUG(F("I2C_R_"));
-			DEBUG(bms_idx_prev + 1);
-			DEBUG(F("->"));
-			DEBUGN(bms[sending_bms][bms_idx_prev]);
-		}
-#endif
-		bms_idx_prev = bms_idx;
-	}
 
 	// Read from UART
-	m = millis();
-	if(work.BMS_read_period > 1 && m - bms_reading > work.BMS_read_period) {
-		bms_reading = m;
-		bitSet(flags, f_BMS_Need_Read);
-	}
-	if(debugmode != 1 && (flags & (_BV(f_BMS_Wait_Answer) | _BV(f_BMS_Need_Read)))) {
-		BMS_Serial_read();
-		if(m - bms_last_read_time > (bitRead(flags, f_BMS_Read_Finish) ? BMS_MIN_PAUSE_BETWEEN_READS : work.BMS_wait_answer_time)) {
-			bms_last_read_time = m;
-			if(bitRead(flags, f_BMS_Wait_Answer)) {
-				if(!bitRead(flags, f_BMS_Read_Finish)) {
-					if(debugmode) {	DEBUG(F("BMS not answer: ")); DEBUGN(read_bms_num + 1); }
-					Set_New_Error(ERR_BMS_NotAnswer);
-				}
-				if(++read_bms_num == work.bms_num) {
-					read_bms_num = 0;
-					bitClear(flags, f_BMS_Wait_Answer);
-				}
-			}
-			if((flags & (_BV(f_BMS_Wait_Answer) | _BV(f_BMS_Need_Read)))) {
-				if(debug == 3) { DEBUG(F("Send to BMS ")); DEBUGN(read_bms_num + 1); }
-				read_idx = 0;	// reset read index
-				while(BMS_SERIAL.read() != -1) ; // flush RX
-				uint8_t crc = BMS_send_pgm_cmd(&BMS_Cmd_Head[0], sizeof(BMS_Cmd_Head), 0);
-				BMS_SERIAL.write(read_bms_num + 1);
-				crc += read_bms_num + 1;
-				if(delta_new_cnt) {
-					if(debugmode) {	DEBUGN(F(" Send Delta")); }
-					uint8_t b;
-					crc = BMS_send_pgm_cmd(&BMS_Cmd_ChangeDelta[0], sizeof(BMS_Cmd_ChangeDelta), 0);
-					b = delta_new >> 8;
-					BMS_SERIAL.write(b);
-					crc += b;
-					b = delta_new & 0xFF;
-					BMS_SERIAL.write(b);
-					crc += b;
-					if(--delta_new_cnt == 0)	{
-						delta_active = delta_new;
-						delta_new = 0;
-						delta_change_pause = 0;
-					}
-				} else {
-					crc = BMS_send_pgm_cmd(&BMS_Cmd_Request[0], sizeof(BMS_Cmd_Request), crc);
-				}
-				BMS_SERIAL.write(crc);
-				if(read_bms_num == 0) bitClear(flags, f_BMS_Need_Read);
-				bitClear(flags, f_BMS_Read_Finish);
-				bitSet(flags, f_BMS_Wait_Answer);
-			}
+	if(RWARN_bit == 0) {
+		uint8_t _err;
+		for(uint8_t i = 0; i < BMS_NUM_MAX; i++) {
+			if((_err = last_error[i])) break;
 		}
-	}
-	// I2C slave receive
-	if(i2c_receive_idx && i2c_receive_idx > i2c_receive[0]) { // i2c write
-		if(debugmode) DEBUGIF(4,F("I2C_W: "));
-		if(i2c_receive[0] >= sizeof(i2c_receive)) {
-			if(debugmode) DEBUGIFN(1,F("I2C_W: LEN!"));
-			i2c_receive_idx = 0;
-		} else {
-			uint8_t crc = 0;
-			for(uint8_t i = 0; i <= i2c_receive[0]; i++) { // +CRC
-				crc += i2c_receive[i];
-				if(debugmode) {
-					DEBUGIF(4,i2c_receive[i]);
-					DEBUGIF(4," ");
+		uint16_t m = millis();
+		if(bms_idx_prev != bms_idx) {
+			if(bms_idx == 0) {
+				flags = f_BMS_Need_Read;
+#ifdef DEBUG_TO_SERIAL
+				if(debugmode && debug >= 2) {
+					DEBUG(F("I2C ms: "));
+					DEBUGN(m - bms_loop_time);
+					bms_loop_time = m;
+				}
+#endif
+			}
+#ifdef DEBUG_TO_SERIAL
+			if(debugmode && debug >= 4) {
+				DEBUG(F("I2C_R_"));
+				DEBUG(bms_idx_prev + 1);
+				DEBUG(F("->"));
+				DEBUGN(bms[sending_bms][bms_idx_prev]);
+			}
+#endif
+			bms_idx_prev = bms_idx;
+		}
+
+#ifdef LCD_ENABLED
+		if(_err) {
+			if(m - led_flashing >= 300UL) {
+				led_flashing = m;
+				*portOutputRegister(digitalPinToPort(LED_PD)) ^= digitalPinToBitMask(LED_PD);
+			}
+		} else *portOutputRegister(digitalPinToPort(LED_PD)) &= ~digitalPinToBitMask(LED_PD);
+#else
+		if(m - led_flashing >= (error_alarm_time == 0 ? 1500UL : 200UL)) {
+			led_flashing = m;
+			if(error_alarm_time) error_alarm_time--;
+			if(debugmode) *portOutputRegister(digitalPinToPort(LED_PD)) |= digitalPinToBitMask(LED_PD);
+			else *portOutputRegister(digitalPinToPort(LED_PD)) ^= digitalPinToBitMask(LED_PD);
+		}
+#endif
+		if(m - cnt100ms >= 100UL) { // 0.1 sec
+			cnt100ms = m;
+			if(key1_status == 1) {
+				// to do...
+				if(debugmode) DEBUGN("Key pressed");
+				//
+				key1_status = 0;
+			}
+			uint8_t d  = !(*portInputRegister(digitalPinToPort(DEBUG_ACTIVE_PD)) & digitalPinToBitMask(DEBUG_ACTIVE_PD));
+#if defined(__AVR_ATmega328PB__)
+			d <<= 1;
+#endif
+			if(d != debugmode) {
+				if(*portOutputRegister(digitalPinToPort(BUZZER_PD1)) & digitalPinToBitMask(BUZZER_PD1)) {
+					*portOutputRegister(digitalPinToPort(BUZZER_PD1)) &= ~(digitalPinToBitMask(BUZZER_PD1)|digitalPinToBitMask(BUZZER_PD2)|digitalPinToBitMask(BUZZER_PD3));
+					beep_time = BEEP_DURATION;
+				} else beep_time = 0;
+				beep_cnt = 0;
+				beep_num = 255;	// short beep
+#ifdef LCD_ENABLED
+				LCD_SCR_last = LCD_SCR_REFRESH_NOW; // refresh screen
+				LCD_refresh_sec = 0;
+#endif
+			}
+			debugmode = d;
+			if((_err && !debugmode) || beep_cnt || beep_num) {
+				if(beep_time) beep_time--;
+				else {
+					if(beep_cnt) {
+						if(--beep_cnt) {
+							*portOutputRegister(digitalPinToPort(BUZZER_PD1)) ^= digitalPinToBitMask(BUZZER_PD1)|digitalPinToBitMask(BUZZER_PD2)|digitalPinToBitMask(BUZZER_PD3);
+							beep_time = BEEP_DURATION;
+						} else {
+							*portOutputRegister(digitalPinToPort(BUZZER_PD1)) &= ~(digitalPinToBitMask(BUZZER_PD1)|digitalPinToBitMask(BUZZER_PD2)|digitalPinToBitMask(BUZZER_PD3));
+							beep_time = BEEP_PAUSE;
+						}
+					} else {
+						if(_err && _err != beep_num) beep_num = _err;
+						if(beep_num) {
+							if(beep_num == 255) {
+								*portOutputRegister(digitalPinToPort(BUZZER_PD1)) |= digitalPinToBitMask(BUZZER_PD1)|digitalPinToBitMask(BUZZER_PD2)|digitalPinToBitMask(BUZZER_PD3);
+								beep_cnt = 1;
+								beep_time = 0;
+							} else {
+								beep_cnt = beep_num * 2;
+								beep_time = BEEP_DURATION;
+							}
+							beep_num = 0;
+						}
+					}
 				}
 			}
-			if(crc != 0) {
-				BLINK_ALARM;
-				if(debugmode) DEBUGIFN(0,F("- CRC ERROR!"));
-			} else if(i2c_receive[1] == 4) { // Broadcast I2CCom_JobWR
-				map_cell_min = i2c_receive[2] + 200;
-				map_cell_full = i2c_receive[3] + 200;
-				map_mode = i2c_receive[4];
-				if(debugmode && (debug >= 2 || bitRead(debug_info, 0))) {
-					bitClear(debug_info, 0);
-					DEBUG(F("I2C_W: Min=")); DEBUG(map_cell_min); DEBUG(F(",Max=")); DEBUG(map_cell_full); DEBUG(F(",Mode=")); DEBUGN(map_mode);
+			if(bms_reading && --bms_reading == 0) {
+				bms_reading = work.BMS_read_period;
+				bitSet(flags, f_BMS_Need_Read);
+			}
+			if(bms_read_pause) bms_read_pause--;
+		} else if(debugmode != 1 && (flags & (_BV(f_BMS_Wait_Answer) | _BV(f_BMS_Need_Read)))) {
+			if(bitRead(flags, f_BMS_Wait_Answer)) BMS_Serial_read();
+			if(bms_read_pause == 0) {
+				if(bitRead(flags, f_BMS_Wait_Answer)) {
+					if(!bitRead(flags, f_BMS_Read_Finish)) {
+						if(debugmode) {	DEBUG(F("BMS not answer: ")); DEBUGN(read_bms_num + 1); }
+						Set_New_Error(ERR_BMS_NotAnswer);
+					}
+					if(++read_bms_num == work.bms_num) {
+						read_bms_num = 0;
+						bitClear(flags, f_BMS_Wait_Answer);
+					}
 				}
-				if(work.BMS_read_period == 1) bitSet(flags, f_BMS_Need_Read);
-			} else if(i2c_receive[1] == 6) { // Broadcast I2CCom_JobWR_MPPT
-//				uint8_t A = i2c_receive[8];
-//				if(debug == 2 || bitRead(debug_info, 1)) {
-//					bitClear(debug_info, 1);
-//					DEBUG(F("I2C_W: I=")); DEBUGN(A);
-//				}
-				if(work.BalansDeltaDefault && !delta_new && delta_active) {
-					if(map_mode == M_ON) { // on battery
-						if(delta_change_pause > BMS_CHANGE_DELTA_DISCHARGE) {
-							if(delta_active != work.BalansDelta) { // last (max delta)
-								delta_new = work.BalansDelta;
-								delta_change_pause = 0;
-								delta_change_equalizer = 0;
-							}
-						}
-					} else if(delta_change_pause > BMS_CHANGE_DELTA_PAUSE_MIN) {
-						uint8_t A = i2c_receive[8];
-						uint16_t d = A >= work.BalansDeltaI ? work.BalansDelta : work.BalansDeltaDefault;
-						if(d == delta_active || (d < delta_active && delta_change_pause <= work.BalansDeltaPause)) d = 0;
-						if(d && d == delta_next) {
-							if(++delta_change_equalizer > BMS_CHANGE_DELTA_EQUALIZER) {
-								delta_new = d;
-								delta_change_equalizer = 0;
-							}
-						} else {
-							delta_next = d;
-							delta_change_equalizer = 0;
-						}
-						if(delta_new) {
-							if(debugmode && debug >= 1) { DEBUG(F("D_NEW: ")); DEBUGN(delta_new); }
-							bitSet(flags, f_BMS_Need_Read);
-							delta_new_cnt = work.bms_num;
+				if((flags & (_BV(f_BMS_Wait_Answer) | _BV(f_BMS_Need_Read)))) {
+					if(debug == 3) { DEBUG(F("Send to BMS ")); DEBUGN(read_bms_num + 1); }
+					read_idx = 0;	// reset read index
+					while(BMS_SERIAL.read() != -1) ; // flush RX
+					uint8_t crc = BMS_send_pgm_cmd(&BMS_Cmd_Head[0], sizeof(BMS_Cmd_Head), 0);
+					BMS_SERIAL.write(read_bms_num + 1);
+					crc += read_bms_num + 1;
+					if(delta_new_cnt) {
+						if(debugmode) {	DEBUGN(F(" Send Delta")); }
+						uint8_t b;
+						crc = BMS_send_pgm_cmd(&BMS_Cmd_ChangeDelta[0], sizeof(BMS_Cmd_ChangeDelta), 0);
+						b = delta_new >> 8;
+						BMS_SERIAL.write(b);
+						crc += b;
+						b = delta_new & 0xFF;
+						BMS_SERIAL.write(b);
+						crc += b;
+						if(--delta_new_cnt == 0)	{
+							delta_active = delta_new;
+							delta_new = 0;
 							delta_change_pause = 0;
 						}
+					} else {
+						crc = BMS_send_pgm_cmd(&BMS_Cmd_Request[0], sizeof(BMS_Cmd_Request), crc);
 					}
+					BMS_SERIAL.write(crc);
+					bms_read_pause = work.BMS_wait_answer_time;
+					if(read_bms_num == 0) bitClear(flags, f_BMS_Need_Read);
+					bitClear(flags, f_BMS_Read_Finish);
+					bitSet(flags, f_BMS_Wait_Answer);
 				}
 			}
-			if(i2c_receive_idx > i2c_receive[0] + 1) {
-				memcpy(i2c_receive, i2c_receive + i2c_receive[0] + 1, i2c_receive_idx -= i2c_receive[0] + 1);
-			} else i2c_receive_idx = 0;
-			watchdog_I2C = 0;
 		}
-		if(debugmode) DEBUGIF(4,F("\n"));
-	}
-#ifdef LCD_ENABLED
-	if(RWARN_bit == 0) {
-		LCD_Display();
-	}
+		if(m - sec_timer >= 1000UL) { // every 1 sec
+			sec_timer = m;
+			if(work.watchdog & 1) watchdog_I2C++;
+			if(work.watchdog & 2) watchdog_BMS++;
+			if(watchdog_I2C > WATCHDOG_NO_CONN || watchdog_BMS > WATCHDOG_NO_CONN) {
+				Wire.end();
+				if(debugmode) {
+					DEBUG(F("* WATCHDOG: ")); DEBUG(watchdog_I2C); DEBUG(','); DEBUGN(watchdog_BMS);
+					watchdog_BMS = watchdog_I2C = 0;
+				} else while(1) { // reboot
+					*portOutputRegister(digitalPinToPort(LED_PD)) ^= digitalPinToBitMask(LED_PD);
+					_delay_ms(100);
+				}
+			}
+			if(delta_change_pause < 0xFFFF) delta_change_pause++;
+			if(RWARN_period) RWARN_period--;
+#ifdef DEBUG_TO_SERIAL
+			DebugSerial_read();
 #endif
+#ifdef LCD_ENABLED
+			if(LCD_refresh_sec) LCD_refresh_sec--;
+			for(uint8_t i = 0; i < BMS_NUM_MAX; i++) {
+				if(LCD_last_error_timeout[i] && --LCD_last_error_timeout[i] == 0) LCD_last_error[i] = 0;
+	//			if((LCD_last_error[i] = last_error[i])) LCD_last_error_timeout[i] = LCD_ERR_DISPLAY_TIME;
+			}
+#endif
+		}
+		// I2C slave receive
+		if(i2c_receive_idx && i2c_receive_idx > i2c_receive[0]) { // i2c write
+			if(debugmode) DEBUGIF(4,F("I2C_W: "));
+			if(i2c_receive[0] >= sizeof(i2c_receive)) {
+				if(debugmode) DEBUGIFN(1,F("I2C_W: LEN!"));
+				i2c_receive_idx = 0;
+			} else {
+				uint8_t crc = 0;
+				for(uint8_t i = 0; i <= i2c_receive[0]; i++) { // +CRC
+					crc += i2c_receive[i];
+					if(debugmode) {
+						DEBUGIF(4,i2c_receive[i]);
+						DEBUGIF(4," ");
+					}
+				}
+				if(crc != 0) {
+					BLINK_ALARM;
+					if(debugmode) DEBUGIFN(0,F("- CRC ERROR!"));
+				} else if(i2c_receive[1] == 4) { // Broadcast I2CCom_JobWR
+					map_cell_min = i2c_receive[2] + 200;
+					map_cell_full = i2c_receive[3] + 200;
+					map_mode = i2c_receive[4];
+					if(debugmode && (debug >= 2 || bitRead(debug_info, 0))) {
+						bitClear(debug_info, 0);
+						DEBUG(F("I2C_W: Min=")); DEBUG(map_cell_min); DEBUG(F(",Max=")); DEBUG(map_cell_full); DEBUG(F(",Mode=")); DEBUGN(map_mode);
+					}
+					if(work.BMS_read_period == 1) bitSet(flags, f_BMS_Need_Read);
+				} else if(i2c_receive[1] == 6) { // Broadcast I2CCom_JobWR_MPPT
+//					uint8_t A = i2c_receive[8];
+//					if(debug == 2 || bitRead(debug_info, 1)) {
+//						bitClear(debug_info, 1);
+//						DEBUG(F("I2C_W: I=")); DEBUGN(A);
+//					}
+					if(work.BalansDeltaDefault && !delta_new && delta_active) {
+						if(map_mode == M_ON) { // on battery
+							if(delta_change_pause > BMS_CHANGE_DELTA_DISCHARGE) {
+								if(delta_active != work.BalansDelta) { // last (max delta)
+									delta_new = work.BalansDelta;
+									delta_change_pause = 0;
+									delta_change_equalizer = 0;
+								}
+							}
+						} else if(delta_change_pause > BMS_CHANGE_DELTA_PAUSE_MIN) {
+							uint8_t A = i2c_receive[8];
+							uint16_t d = A >= work.BalansDeltaI ? work.BalansDelta : work.BalansDeltaDefault;
+							if(d == delta_active || (d < delta_active && delta_change_pause <= work.BalansDeltaPause)) d = 0;
+							if(d && d == delta_next) {
+								if(++delta_change_equalizer > BMS_CHANGE_DELTA_EQUALIZER) {
+									delta_new = d;
+									delta_change_equalizer = 0;
+								}
+							} else {
+								delta_next = d;
+								delta_change_equalizer = 0;
+							}
+							if(delta_new) {
+								if(debugmode && debug >= 1) { DEBUG(F("D_NEW: ")); DEBUGN(delta_new); }
+								bitSet(flags, f_BMS_Need_Read);
+								delta_new_cnt = work.bms_num;
+								delta_change_pause = 0;
+							}
+						}
+					}
+				}
+				if(i2c_receive_idx > i2c_receive[0] + 1) {
+					memcpy(i2c_receive, i2c_receive + i2c_receive[0] + 1, i2c_receive_idx -= i2c_receive[0] + 1);
+				} else i2c_receive_idx = 0;
+				watchdog_I2C = 0;
+			}
+			if(debugmode) DEBUGIF(4,F("\n"));
+		}
+#ifdef LCD_ENABLED
+		LCD_Display();
+#endif
+	}
 	//delay(MAIN_LOOP_PERIOD); // not less than, actually +8..16us
 }
