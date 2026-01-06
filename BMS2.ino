@@ -85,7 +85,7 @@ LiquidCrystal lcd( 2,  3,  4,  5,  6,  7);	// LCD 20x4
 #define I2C_FREQ					2500
 #define MAIN_LOOP_PERIOD			1		// msec, not less than this, actually +848 us
 #define BMS_NO_TEMP					255
-#define BMS_MIN_PAUSE_BETWEEN_READS	15		// *100ms
+#define BMS_MIN_PAUSE_BETWEEN_READS	2		// *100ms
 #define BMS_CHANGE_DELTA_PAUSE_MIN  1800	// sec
 #define BMS_CHANGE_DELTA_EQUALIZER  60		// attempts (* ~1 sec)
 #define BMS_CHANGE_DELTA_DISCHARGE  30		// sec, When I2C_MAP_MODE = M_ON balance delta => BalansDelta[max]
@@ -639,12 +639,12 @@ void PrintInfoToSerial(void)
 	DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_watchdog); DEBUGN(F("=1-I2C,2-BMS,3-all)"));
 	DEBUG(F("RS485: ")); DEBUG(BMS_SERIAL_RATE); DEBUGN(F(" 8N1"));
 	DEBUG(F("BMS MODBUS IDs: ")); for(uint8_t i = 1; i <= BMS_NUM_MAX; i++) { DEBUG(i); DEBUG(' '); }
-	DEBUG(F("\nBMS read period, ms: "));
+	DEBUG(F("\nBMS read period, 100ms: "));
 	if(work.BMS_read_period > 1) DEBUG(work.BMS_read_period);
 	else if(work.BMS_read_period == 1) DEBUG(F("Synch I2C"));
 	else DEBUG(F("OFF"));
-	DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_period); DEBUGN(F("=0-off,1-synch,X ms)"));
-	DEBUG(F("Wait answer from BMS, ms: ")); DEBUG(work.BMS_wait_answer_time); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_wait_answer); DEBUGN(F("=X)"));
+	DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_period); DEBUGN(F("=0-off,X)"));
+	DEBUG(F("Wait answer from BMS, 100ms: ")); DEBUG(work.BMS_wait_answer_time); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_wait_answer); DEBUGN(F("=X)"));
 	DEBUG(F("BMS rotate period: ")); DEBUG(work.I2C_bms_rotate_period); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_rotate); DEBUGN(F("=X)"));
 	DEBUG(F("Remote warning period [D")); DEBUG(RWARN_PULSE_PIN); DEBUG(F("]: ")); DEBUG(work.RWARN_Send_Period); DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_RWARN_period); DEBUGN(F("=X)"));
 	//DEBUG(F("Options(bits: median,average): ")); if(bitRead(work.options, o_average)) DEBUG(F("average ")); if(bitRead(work.options, o_median)) DEBUG(F("median ")); DEBUG("\n");
@@ -1177,7 +1177,6 @@ void setup()
 	memset(bms_flags, 0, sizeof(bms_flags));
 	memset(last_error, 0, sizeof(last_error));
 	memset(LCD_last_error, 0, sizeof(LCD_last_error));
-	RWARN_period = work.RWARN_Send_Period + 2;
 	Wire.begin();
 	// deactivate internal pullups for twi.
 	digitalWrite(SDA, 0);
@@ -1207,6 +1206,8 @@ void setup()
 	lcd.print(F("USB UART: '?' - help"));
 #endif
 	FlashLED(3, 1, 1);
+	RWARN_period = work.RWARN_Send_Period + 2;
+	bms_reading = work.BMS_read_period;
 }
 
 void loop()
@@ -1227,7 +1228,7 @@ void loop()
 		uint16_t m = millis();
 		if(bms_idx_prev != bms_idx) {
 			if(bms_idx == 0) {
-				flags = f_BMS_Need_Read;
+				flags |= _BV(f_BMS_Need_Read);
 #ifdef DEBUG_TO_SERIAL
 				if(debugmode && debug >= 2) {
 					DEBUG(F("I2C ms: "));
@@ -1262,7 +1263,7 @@ void loop()
 			else *portOutputRegister(digitalPinToPort(LED_PD)) ^= digitalPinToBitMask(LED_PD);
 		}
 #endif
-		if(m - cnt100ms >= 100UL) { // 0.1 sec
+		if(m - cnt100ms >= 100) { // 0.1 sec
 			cnt100ms = m;
 			if(key1_status == 1) {
 				// to do...
@@ -1362,10 +1363,11 @@ void loop()
 					if(read_bms_num == 0) bitClear(flags, f_BMS_Need_Read);
 					bitClear(flags, f_BMS_Read_Finish);
 					bitSet(flags, f_BMS_Wait_Answer);
+					return; // continue loop
 				}
 			}
 		}
-		if(m - sec_timer >= 1000UL) { // every 1 sec
+		if(m - sec_timer > 1000) { // every 1 sec
 			sec_timer = m;
 			if(work.watchdog & 1) watchdog_I2C++;
 			if(work.watchdog & 2) watchdog_BMS++;
