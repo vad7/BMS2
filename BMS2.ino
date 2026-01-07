@@ -37,7 +37,7 @@ Microart connector RJ-11 (6P6C):
 
 */
 
-#define VERSION F("2.2")
+#define VERSION F("2.3")
 
 #include "Arduino.h"
 #include <avr/wdt.h>
@@ -90,7 +90,10 @@ LiquidCrystal lcd( 2,  3,  4,  5,  6,  7);	// LCD 20x4
 #define BMS_CHANGE_DELTA_EQUALIZER  60		// attempts (* ~1 sec)
 #define BMS_CHANGE_DELTA_DISCHARGE  30		// sec, When I2C_MAP_MODE = M_ON balance delta => BalansDelta[max]
 #define BEEP_DURATION				5		// *0.1 sec
-#define BEEP_PAUSE					40		// *0.1 sec
+#define BEEP_PAUSE					30		// *0.1 sec
+#define ERR_THRESHOLD_NUMBER		5		// beeping after series of errors
+#define KEY1_PRESSING				(!(*key1_PIN & key1_MASK))
+
 const uint8_t BMS_Cmd_Head[] PROGMEM = { 0x55, 0xAA };
 const uint8_t BMS_Cmd_Request[] PROGMEM = { 0xFF, 0x00, 0x00 };
 const uint8_t BMS_Cmd_ChangeDelta[] PROGMEM = { 0xF2 };
@@ -121,6 +124,7 @@ const uint8_t BMS_Cmd_ChangeDelta[] PROGMEM = { 0xF2 };
 #ifdef DEBUG_TO_SERIAL
 #define DebugSerial 				Serial
 #endif
+#define MIN(a,b) (a < b ? a : b)
 
 #define BLINK_ALARM		{ error_alarm_time = 50; }
 #ifdef DEBUG_TO_SERIAL
@@ -220,7 +224,7 @@ struct _EEPROM EEMEM EEPROM = {
 		.bms_cells_qty = 16,
 		.options = (1<<o_NO_I2C) | (0<<o_equalize_cells_V),
 		.BMS_read_period = 50,
-		.BMS_wait_answer_time = 5,
+		.BMS_wait_answer_time = 9,
 		.I2C_bms_rotate_period = 5,
 		.round = round_cut,
 		.V_correct = 0,
@@ -301,6 +305,7 @@ uint8_t  map_mode = M_NOT_READ;
 uint8_t  temp = BMS_NO_TEMP;			// C, +50
 uint8_t  crc;
 uint8_t  last_error[BMS_NUM_MAX];
+uint8_t  last_error_cnt[BMS_NUM_MAX];
 uint8_t  LCD_last_error[BMS_NUM_MAX];
 uint8_t  LCD_last_error_timeout[BMS_NUM_MAX];
 uint8_t  error_alarm_time = 0;
@@ -325,6 +330,7 @@ uint8_t  beep_cnt = 0;
 uint8_t  beep_time = 0;
 uint8_t  key1_status = 0;
 uint8_t  key1_delay = 0;		// 1-2ms
+uint8_t  key1_long_press = 0;
 volatile uint8_t *key1_PIN;
 uint8_t  key1_MASK;
 
@@ -333,7 +339,7 @@ ISR(PCINT2_vect, ISR_ALIASOF(PCINT0_vect));
 ISR(PCINT3_vect, ISR_ALIASOF(PCINT0_vect));
 ISR(PCINT0_vect) {
 	if(!key1_delay) {
-		if(!(*key1_PIN & key1_MASK)) key1_status = 1; // pressed
+		if(KEY1_PRESSING) key1_status = 1; // pressed
 	}
 	key1_delay = 150;
 }
@@ -364,9 +370,11 @@ void Set_New_Error(uint8_t _err)
 	last_error[read_bms_num] = _err;
 	if(_err) {
 		LCD_last_error[read_bms_num] = _err;
-		LCD_last_error_timeout[read_bms_num] = work.BMS_read_period / 1000 + 1;
+		LCD_last_error_timeout[read_bms_num] = work.BMS_read_period / 10 + 1;
+		if(++last_error_cnt[read_bms_num] == 0) last_error_cnt[read_bms_num]--;
 		BLINK_ALARM;
-	}
+	} else last_error_cnt[read_bms_num] = 0;
+
 }
 
 void i2c_set_slave_addr(uint8_t addr)
@@ -474,6 +482,7 @@ int32_t  LCD_SCR_TotalV[BMS_NUM_MAX];
 uint16_t LCD_SCR_MinCellV[BMS_NUM_MAX];
 uint16_t LCD_SCR_MaxCellV[BMS_NUM_MAX];
 uint8_t  LCD_refresh_sec = 3;	// счетчик обновления LCD
+uint8_t  LCD_timer = 0;
 uint8_t  LCD_page = 0;
 
 // Outs error text and fills remaining space in string with spaces
@@ -618,11 +627,24 @@ xFlashD:
 		}
 		if(i) bitToggle(LCD_SCR_last, LCD_SCR_last_pulse);
 	} else if(LCD_page == 1) {
-		LCD_page = 0;
 		if(!bitRead(LCD_SCR_last, LCD_SCR_last_page)) {
+			bitSet(LCD_SCR_last, LCD_SCR_last_page);
 			lcd.clear();
-			// to do...
 		}
+		lcd.setCursor(0, 0);
+		lcd.print("BMS total: ");
+		lcd.print(work.bms_num);
+		for(uint8_t i = 1; i <= MIN(BMS_NUM_MAX, 3); i++) {
+			lcd.setCursor(0, i);
+			lcd.print("BMS");
+			lcd.print(i);
+			lcd.print(" error: ");
+			lcd.print(LCD_last_error[i-1]);
+		}
+		if(LCD_timer == 0) {
+			eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
+			LCD_page = 0;
+		} else LCD_timer--;
 	}
 }
 #endif
@@ -635,7 +657,7 @@ void PrintInfoToSerial(void)
 	DEBUG(F("Watchdog(")); DEBUG(WATCHDOG_NO_CONN); DEBUG(F("s): ")); if(!work.watchdog) DEBUG(F("NONE")); else { if(work.watchdog & 1) DEBUG(F("I2C ")); if(work.watchdog & 2) DEBUG(F("BMS")); }
 	DEBUG(F(" (")); DEBUG((const __FlashStringHelper*)dbg_watchdog); DEBUGN(F("=1-I2C,2-BMS,3-all)"));
 	DEBUG(F("RS485: ")); DEBUG(BMS_SERIAL_RATE); DEBUGN(F(" 8N1"));
-	DEBUG(F("BMS MODBUS IDs: ")); for(uint8_t i = 1; i <= BMS_NUM_MAX; i++) { DEBUG(i); DEBUG(' '); }
+	DEBUG(F("BMS MODBUS IDs: ")); for(uint8_t i = 1; i <= work.bms_num; i++) { DEBUG(i); DEBUG(' '); }
 	DEBUG(F("\nBMS read period, 100ms: "));
 	if(work.BMS_read_period > 1) DEBUG(work.BMS_read_period);
 	else if(work.BMS_read_period == 1) DEBUG(F("Synch I2C"));
@@ -1173,6 +1195,7 @@ void setup()
 	memset(bms_max_string, 0, sizeof(bms_max_string));
 	memset(bms_flags, 0, sizeof(bms_flags));
 	memset(last_error, 0, sizeof(last_error));
+	memset(last_error_cnt, 0, sizeof(last_error_cnt));
 	memset(LCD_last_error, 0, sizeof(LCD_last_error));
 	Wire.begin();
 	// deactivate internal pullups for twi.
@@ -1212,14 +1235,14 @@ void loop()
 	static uint16_t led_flashing, cnt100ms;
 	wdt_reset();
 	RWARN_check_send();
-	if(!(*key1_PIN & key1_MASK)) { // pressed
+	if(KEY1_PRESSING) { // pressed
 		key1_delay = 150;
 	} else if(key1_delay) key1_delay--;
 
 	// Read from UART
 	if(RWARN_bit == 0) {
 		uint8_t _err;
-		for(uint8_t i = 0; i < BMS_NUM_MAX; i++) {
+		for(uint8_t i = 0; i < work.bms_num; i++) {
 			if((_err = last_error[i])) break;
 		}
 		uint16_t m = millis();
@@ -1247,13 +1270,13 @@ void loop()
 
 #ifdef LCD_ENABLED
 		if(_err) {
-			if(m - led_flashing >= 300UL) {
+			if(m - led_flashing >= 300) {
 				led_flashing = m;
 				*portOutputRegister(digitalPinToPort(LED_PD)) ^= digitalPinToBitMask(LED_PD);
 			}
 		} else *portOutputRegister(digitalPinToPort(LED_PD)) &= ~digitalPinToBitMask(LED_PD);
 #else
-		if(m - led_flashing >= (error_alarm_time == 0 ? 1500UL : 200UL)) {
+		if(m - led_flashing >= (error_alarm_time == 0 ? 1500 : 200)) {
 			led_flashing = m;
 			if(error_alarm_time) error_alarm_time--;
 			if(debugmode) *portOutputRegister(digitalPinToPort(LED_PD)) |= digitalPinToBitMask(LED_PD);
@@ -1262,11 +1285,31 @@ void loop()
 #endif
 		if(m - cnt100ms >= 100) { // 0.1 sec
 			cnt100ms = m;
-			if(key1_status == 1) {
-				// to do...
-				if(debugmode) DEBUGN("Key pressed");
-				//
-				key1_status = 0;
+			if(key1_status) {
+				//if(debugmode) DEBUGN("Key pressed");
+				if(LCD_page == 1) {
+					if(key1_long_press) {
+						if(!KEY1_PRESSING) key1_long_press--;
+					} else {
+						if(++work.bms_num > BMS_NUM_MAX) work.bms_num = 1;
+						beep_cnt = 0;
+						beep_num = 255;	// short beep
+						key1_status = 0;
+					}
+				} else {
+					if(KEY1_PRESSING) { // pressed
+						if(++key1_long_press > 10) {
+							LCD_page = 1;
+							LCD_timer = 100;
+						}
+					} else key1_status = 0;
+				}
+			}
+			for(uint8_t i = 0; i < work.bms_num; i++) {
+				if(last_error_cnt[i] >= ERR_THRESHOLD_NUMBER) {
+					_err = last_error_cnt[i];
+					break;
+				}
 			}
 			uint8_t d  = !(*portInputRegister(digitalPinToPort(DEBUG_ACTIVE_PD)) & digitalPinToBitMask(DEBUG_ACTIVE_PD));
 #if defined(__AVR_ATmega328PB__)
@@ -1385,7 +1428,7 @@ void loop()
 #endif
 #ifdef LCD_ENABLED
 			if(LCD_refresh_sec) LCD_refresh_sec--;
-			for(uint8_t i = 0; i < BMS_NUM_MAX; i++) {
+			for(uint8_t i = 0; i < work.bms_num; i++) {
 				if(LCD_last_error_timeout[i] && --LCD_last_error_timeout[i] == 0) LCD_last_error[i] = 0;
 	//			if((LCD_last_error[i] = last_error[i])) LCD_last_error_timeout[i] = LCD_ERR_DISPLAY_TIME;
 			}
