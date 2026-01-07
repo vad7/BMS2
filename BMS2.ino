@@ -224,7 +224,7 @@ struct _EEPROM EEMEM EEPROM = {
 		.bms_cells_qty = 16,
 		.options = (1<<o_NO_I2C) | (0<<o_equalize_cells_V),
 		.BMS_read_period = 50,
-		.BMS_wait_answer_time = 9,
+		.BMS_wait_answer_time = 10,
 		.I2C_bms_rotate_period = 5,
 		.round = round_cut,
 		.V_correct = 0,
@@ -645,6 +645,7 @@ xFlashD:
 			eeprom_update_block(&work, &EEPROM.work, sizeof(EEPROM.work));
 			LCD_page = 0;
 		} else LCD_timer--;
+		LCD_refresh_sec = LCD_REFRESH_PERIOD;
 	}
 }
 #endif
@@ -1183,7 +1184,7 @@ void setup()
 	eeprom_read_block(&work, &EEPROM.work, sizeof(EEPROM.work));
 #ifdef DEBUG_BMS_SEND
 	work.bms_cells_qty = 20;
-	work.BMS_read_period = 5000;
+	work.BMS_read_period = 50;
 	debug = 3;
 #endif
 	memset(bms_Q, 0, sizeof(bms_Q));
@@ -1300,7 +1301,7 @@ void loop()
 					if(KEY1_PRESSING) { // pressed
 						if(++key1_long_press > 10) {
 							LCD_page = 1;
-							LCD_timer = 100;
+							LCD_timer = 100 / LCD_REFRESH_PERIOD;
 						}
 					} else key1_status = 0;
 				}
@@ -1361,7 +1362,7 @@ void loop()
 			}
 			if(bms_read_pause) bms_read_pause--;
 		} else if(debugmode != 1 && (flags & (_BV(f_BMS_Wait_Answer) | _BV(f_BMS_Need_Read)))) {
-			if(bitRead(flags, f_BMS_Wait_Answer) && RWARN_idx == 0) BMS_Serial_read();
+			if(bitRead(flags, f_BMS_Wait_Answer)) BMS_Serial_read();
 			if(bms_read_pause == 0) {
 				if(bitRead(flags, f_BMS_Wait_Answer)) {
 					if(!bitRead(flags, f_BMS_Read_Finish)) {
