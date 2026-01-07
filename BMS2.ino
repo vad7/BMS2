@@ -93,6 +93,7 @@ LiquidCrystal lcd( 2,  3,  4,  5,  6,  7);	// LCD 20x4
 #define BEEP_PAUSE					30		// *0.1 sec
 #define ERR_THRESHOLD_NUMBER		5		// beeping after series of errors
 #define KEY1_PRESSING				(!(*key1_PIN & key1_MASK))
+#define BEEP_SHORT_NOW				{ beep_time = 0; beep_cnt = 0; beep_num = 255; } // short beep
 
 const uint8_t BMS_Cmd_Head[] PROGMEM = { 0x55, 0xAA };
 const uint8_t BMS_Cmd_Request[] PROGMEM = { 0xFF, 0x00, 0x00 };
@@ -1290,19 +1291,20 @@ void loop()
 				//if(debugmode) DEBUGN("Key pressed");
 				if(LCD_page == 1) {
 					if(key1_long_press) {
-						if(!KEY1_PRESSING) key1_long_press--;
+						if(!KEY1_PRESSING && --key1_long_press == 0) key1_status = 0;
 					} else {
 						if(++work.bms_num > BMS_NUM_MAX) work.bms_num = 1;
-						beep_cnt = 0;
-						beep_num = 255;	// short beep
 						key1_status = 0;
+						LCD_refresh_sec = 0;
+						BEEP_SHORT_NOW;
 					}
 				} else {
 					if(KEY1_PRESSING) { // pressed
 						if(++key1_long_press > 10) {
 							LCD_page = 1;
 							LCD_timer = 100 / LCD_REFRESH_PERIOD;
-						}
+							LCD_refresh_sec = 0;
+							BEEP_SHORT_NOW;						}
 					} else key1_status = 0;
 				}
 			}
@@ -1321,8 +1323,7 @@ void loop()
 					*portOutputRegister(digitalPinToPort(BUZZER_PD1)) &= ~(digitalPinToBitMask(BUZZER_PD1)|digitalPinToBitMask(BUZZER_PD2)|digitalPinToBitMask(BUZZER_PD3));
 					beep_time = BEEP_DURATION;
 				} else beep_time = 0;
-				beep_cnt = 0;
-				beep_num = 255;	// short beep
+				BEEP_SHORT_NOW;
 #ifdef LCD_ENABLED
 				LCD_SCR_last = LCD_SCR_REFRESH_NOW; // refresh screen
 				LCD_refresh_sec = 0;
