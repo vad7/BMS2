@@ -366,18 +366,6 @@ void FlashLED(uint8_t num, uint8_t ton, uint8_t toff) {
 	}
 }
 
-void Set_New_Error(uint8_t _err)
-{
-	last_error[read_bms_num] = _err;
-	if(_err) {
-		LCD_last_error[read_bms_num] = _err;
-		LCD_last_error_timeout[read_bms_num] = work.BMS_read_period / 10 + 1;
-		if(++last_error_cnt[read_bms_num] == 0) last_error_cnt[read_bms_num]--;
-		BLINK_ALARM;
-	} else last_error_cnt[read_bms_num] = 0;
-
-}
-
 void i2c_set_slave_addr(uint8_t addr)
 {
 	TWAR = (addr << 1) | 1; // +broardcast addr(0)
@@ -517,7 +505,7 @@ void LCD_Display(void)
 	if(LCD_refresh_sec) return;
 	if(LCD_page == 0) {
 //  01234567890123456789
-//  B1: ON* 53.421V ·5
+//  B1: ON+ 53.421V ·5
 //   3.223(12) 3.234(16)
 //  B2: OFF 53.342V ·12
 //   3.223(12) 3.234(16)
@@ -553,7 +541,7 @@ void LCD_Display(void)
 			LCD_SCR_TotalV[i] = 0;
 		} else {
 xShowTotalV:
-			if(bms_min_cell_mV[i]) {
+			if(bms_max_cell_mV[i]) {
 				if(bitRead(bms_flags[i], 0)) {
 					lcd.print(F("ON"));
 					lcd.print(bitRead(bms_flags[i], 1) ? '+' : ' ');
@@ -563,7 +551,7 @@ xShowTotalV:
 					LCD_print_num_d3(LCD_SCR_TotalV[i] = bms_total_mV[i]);
 					lcd.print(F("V "));
 				}
-				if(warn_char == '!') { // Error
+				if(warn_char == '!' && e != ERR_BMS_Cell_DeltaMax) { // Error
 					lcd.setCursor(16, i*2);
 					lcd.print('E');
 					lcd.print(e);
@@ -574,7 +562,7 @@ xShowTotalV:
 					uint16_t n = bms_max_cell_mV[i] - bms_min_cell_mV[i];
 					if(debugmode && i == 0) {
 						lcd.setCursor(n > 99 ? 15 : 16, i*2);
-						lcd.print((char)0xA5); // '·'
+						lcd.print(e != ERR_BMS_Cell_DeltaMax ? (char)0xA5 : warn_char); // '·'
 						lcd.print(n);
 						if(n < 1000) {
 							lcd.print(' ');
@@ -605,7 +593,7 @@ xFlashD:
 		}
 		if(sub_min != 0) {
 			lcd.setCursor(0, i*2 + 1);
-			lcd.print(' ');
+			lcd.print(e == ERR_BMS_Cell_Low ? (char)0x7E : ' '); // '->'
 			LCD_print_num_d3(LCD_SCR_MinCellV[i] = bms_min_cell_mV[i]);
 			lcd.print('(');
 			uint8_t n;
@@ -615,7 +603,7 @@ xFlashD:
 		}
 		if(sub_max != 0) {
 			lcd.setCursor(10, i*2 + 1);
-			lcd.print(' ');
+			lcd.print(e == ERR_BMS_Cell_High ? (char)0x7E : ' '); // '->'
 			LCD_print_num_d3(LCD_SCR_MaxCellV[i] = bms_max_cell_mV[i]);
 			lcd.print('(');
 			uint8_t n;
@@ -835,6 +823,18 @@ void DebugSerial_read(void)
 	}
 }
 #endif
+
+void Set_New_Error(uint8_t _err)
+{
+	last_error[read_bms_num] = _err;
+	if(_err) {
+		LCD_last_error[read_bms_num] = _err;
+		LCD_last_error_timeout[read_bms_num] = work.BMS_read_period / 10 + 1;
+		if(++last_error_cnt[read_bms_num] == 0) last_error_cnt[read_bms_num]--;
+		BLINK_ALARM;
+	} else last_error_cnt[read_bms_num] = 0;
+	LCD_refresh_sec = 0;
+}
 
 // Return CRC
 uint8_t BMS_send_pgm_cmd(const uint8_t *cmd, uint8_t len, uint8_t crc)
