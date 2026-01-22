@@ -900,7 +900,7 @@ void BMS_Serial_read(void)
 				}
 				watchdog_BMS = 0;
 			} else if(n == 0xFF) { // Request answer
-				n = read_buffer[BMS_OFFSET_Alarm] ^ 1;
+				n = read_buffer[BMS_OFFSET_Alarm] ^ 1; // invert cell num wrong bit
 				if(n) {
 					if(debug >= 3) {
 						DEBUG(F("BMS")); DEBUG(read_bms_num + 1); DEBUG(F(" Alarm ")); DEBUG(n); DEBUG(F(": "));
